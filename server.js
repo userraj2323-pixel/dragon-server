@@ -1,137 +1,281 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const { Pool } = require('pg');
-
-const app = express();
-app.use(express.json());
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:Anuj1999@2026@db.olmvohfxwzrmktdkxpms.supabase.co:5432/postgres',
-  ssl: { rejectUnauthorized: false }
-});
-
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-
-let roundId = 1;
-let timeLeft = 15;
-let state = 'BETTING';
-let currentBets = [];
-
-setInterval(async () => {
-  if (state === 'BETTING') {
-    timeLeft--;
-    io.emit('timer_tick', { timeLeft, state });
-
-    if (timeLeft <= 0) {
-      state = 'CALCULATING';
-      io.emit('round_state', { state });
-
-      const dCard = Math.floor(Math.random() * 13) + 1;
-      const tCard = Math.floor(Math.random() * 13) + 1;
-      
-      let winner = 'TIE';
-      if (dCard > tCard) winner = 'DRAGON';
-      else if (tCard > dCard) winner = 'TIGER';
-
-      try {
-        await pool.query(
-          'INSERT INTO game_rounds (dragon_card, tiger_card, winner) VALUES ($1, $2, $3)',
-          [dCard, tCard, winner]
-        );
-
-        for (const bet of currentBets) {
-          if (bet.bet_on === winner) {
-            const winMultiplier = (winner === 'TIE') ? 8 : 2;
-            const winAmount = bet.amount * winMultiplier;
-            await pool.query(
-              'UPDATE wallets SET winning = winning + $1 WHERE user_id = $2',
-              [winAmount, bet.user_id]
-            );
-            await pool.query('UPDATE bets SET status = $1 WHERE id = $2', ['WON', bet.id]);
-          } else {
-            await pool.query('UPDATE bets SET status = $1 WHERE id = $2', ['LOST', bet.id]);
-          }
-        }
-      } catch (err) {
-        console.error('DB Error:', err);
-      }
-
-      state = 'RESULT';
-      io.emit('round_result', { roundId, dCard, tCard, winner });
-
-      setTimeout(() => {
-        roundId++;
-        timeLeft = 15;
-        state = 'BETTING';
-        currentBets = [];
-        io.emit('round_start', { roundId });
-      }, 5000);
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Dragon Tiger Live Game + Admin Control</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    body {
+      background: #090e1a;
+      color: white;
+      font-family: 'Segoe UI', Tahoma, sans-serif;
+      text-align: center;
+      padding: 15px;
+      margin: 0;
     }
-  }
-}, 1000);
-
-io.on('connection', (socket) => {
-  socket.on('join_game', async ({ userId }) => {
-    socket.userId = userId;
-    try {
-      let res = await pool.query('SELECT * FROM wallets WHERE user_id = $1', [userId]);
-      if (res.rows.length === 0) {
-        res = await pool.query(
-          'INSERT INTO wallets (user_id) VALUES ($1) RETURNING *',
-          [userId]
-        );
-      }
-      socket.emit('wallet_update', res.rows[0]);
-    } catch (e) {
-      console.error(e);
+    .header { margin-bottom: 10px; }
+    .status {
+      font-size: 14px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      display: inline-block;
+      background: #16a34a;
     }
-  });
+    .round-info { color: #94a3b8; font-size: 15px; margin-top: 5px; }
+    .timer-box {
+      font-size: 28px;
+      font-weight: bold;
+      color: #facc15;
+      margin: 10px 0;
+      min-height: 38px;
+    }
+    
+    /* Admin Control Panel */
+    .admin-panel {
+      background: #1e1b4b;
+      border: 2px dashed #818cf8;
+      border-radius: 12px;
+      max-width: 650px;
+      margin: 15px auto;
+      padding: 12px;
+    }
+    .admin-title { color: #a5b4fc; font-weight: bold; margin-bottom: 8px; font-size: 16px; }
+    .admin-btns { display: flex; justify-content: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+    .adm-btn {
+      padding: 8px 14px;
+      border: none;
+      border-radius: 6px;
+      font-weight: bold;
+      cursor: pointer;
+      color: white;
+    }
+    .adm-dragon { background: #dc2626; }
+    .adm-tiger { background: #d97706; }
+    .adm-auto { background: #059669; }
 
-  socket.on('place_bet', async ({ userId, betOn, amount }) => {
-    if (state !== 'BETTING') {
-      return socket.emit('error_msg', 'Betting closed!');
+    /* Game Table */
+    .game-table {
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+      margin: 20px auto;
+      max-width: 650px;
+    }
+    .card-box {
+      background: #172033;
+      border: 3px solid #334155;
+      border-radius: 12px;
+      flex: 1;
+      padding: 15px 10px;
+      transition: 0.3s;
+    }
+    .card-box.winner {
+      box-shadow: 0 0 25px #22c55e;
+      border-color: #22c55e;
+      transform: scale(1.05);
+    }
+    .dragon { border-color: #ef4444; }
+    .tiger { border-color: #f59e0b; }
+    .tie { border-color: #10b981; max-width: 130px; }
+    .card-title { font-size: 20px; font-weight: bold; margin-bottom: 5px; }
+    .card-value {
+      font-size: 50px;
+      font-weight: bold;
+      height: 60px;
+      line-height: 60px;
+      margin: 10px 0;
+    }
+    .bet-pool {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 8px;
+    }
+    .bet-btn {
+      width: 100%;
+      padding: 10px;
+      font-size: 15px;
+      font-weight: bold;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      color: white;
+    }
+    .winner-banner {
+      font-size: 24px;
+      font-weight: bold;
+      color: #38bdf8;
+      min-height: 35px;
+      margin: 10px 0;
+    }
+    .logs-box {
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      margin: 15px auto;
+      max-width: 650px;
+      padding: 10px;
+      font-family: monospace;
+      font-size: 12px;
+      text-align: left;
+      height: 90px;
+      overflow-y: auto;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1 style="margin: 5px;">🐉 DRAGON vs TIGER 🐅</h1>
+    <div id="status" class="status">🟢 Server Connected</div>
+    <div id="roundId" class="round-info">Round: --</div>
+  </div>
+
+  <!-- ADMIN MASTER CONTROL PANEL -->
+  <div class="admin-panel">
+    <div class="admin-title">👑 ADMIN CONTROL (House Profit System)</div>
+    <div id="adminModeStatus" style="color: #4ade80; font-weight: bold;">Current Engine: Auto-Profit (Kam Bet Jeetegi)</div>
+    <div class="admin-btns">
+      <button class="adm-btn adm-dragon" onclick="setAdminWinner('DRAGON')">Force Dragon Win 🐉</button>
+      <button class="adm-btn adm-tiger" onclick="setAdminWinner('TIGER')">Force Tiger Win 🐅</button>
+      <button class="adm-btn adm-auto" onclick="setAdminWinner('AUTO')">Auto-Profit Mode 🛡️</button>
+    </div>
+  </div>
+
+  <div class="timer-box" id="timer">Waiting for round...</div>
+
+  <!-- TABLE -->
+  <div class="game-table">
+    <div class="card-box dragon" id="dragonBox">
+      <div class="card-title" style="color: #ef4444;">DRAGON</div>
+      <div class="bet-pool" id="poolDragon">Total Bet: ₹0</div>
+      <div class="card-value" id="dragonCard">?</div>
+      <button class="bet-btn" style="background:#dc2626;" onclick="placeBet('DRAGON', 500)">Bet ₹500 Dragon</button>
+    </div>
+
+    <div class="card-box tie" id="tieBox">
+      <div class="card-title" style="color: #10b981;">TIE</div>
+      <div class="bet-pool" id="poolTie">Total: ₹0</div>
+      <div class="card-value" style="font-size: 22px; color: #10b981;">8:1</div>
+      <button class="bet-btn" style="background:#059669;" onclick="placeBet('TIE', 100)">Bet ₹100 Tie</button>
+    </div>
+
+    <div class="card-box tiger" id="tigerBox">
+      <div class="card-title" style="color: #f59e0b;">TIGER</div>
+      <div class="bet-pool" id="poolTiger">Total Bet: ₹0</div>
+      <div class="card-value" id="tigerCard">?</div>
+      <button class="bet-btn" style="background:#d97706;" onclick="placeBet('TIGER', 500)">Bet ₹500 Tiger</button>
+    </div>
+  </div>
+
+  <div class="winner-banner" id="winnerBanner">Place your bets!</div>
+
+  <div class="logs-box" id="logs"></div>
+
+  <script>
+    const SERVER_URL = 'https://dragon-server-0y5z.onrender.com';
+    const socket = io(SERVER_URL);
+
+    const timerEl = document.getElementById('timer');
+    const roundEl = document.getElementById('roundId');
+    const dragonCardEl = document.getElementById('dragonCard');
+    const tigerCardEl = document.getElementById('tigerCard');
+    const winnerEl = document.getElementById('winnerBanner');
+    const dragonBox = document.getElementById('dragonBox');
+    const tigerBox = document.getElementById('tigerBox');
+    const tieBox = document.getElementById('tieBox');
+    const poolDragon = document.getElementById('poolDragon');
+    const poolTiger = document.getElementById('poolTiger');
+    const poolTie = document.getElementById('poolTie');
+    const adminModeStatus = document.getElementById('adminModeStatus');
+    const logsEl = document.getElementById('logs');
+
+    function log(msg) {
+      const p = document.createElement('div');
+      p.innerText = '⚡ ' + msg;
+      logsEl.prepend(p);
     }
 
-    try {
-      const walletRes = await pool.query('SELECT * FROM wallets WHERE user_id = $1', [userId]);
-      const wallet = walletRes.rows[0];
-      const total = Number(wallet.deposit) + Number(wallet.winning) + Number(wallet.bonus);
+    function cardSymbol(num) {
+      if (!num) return '?';
+      if (num === 1) return 'A';
+      if (num === 11) return 'J';
+      if (num === 12) return 'Q';
+      if (num === 13) return 'K';
+      return num;
+    }
 
-      if (total < amount) {
-        return socket.emit('error_msg', 'Insufficient Balance!');
-      }
+    function resetTable() {
+      dragonCardEl.innerText = '?';
+      tigerCardEl.innerText = '?';
+      dragonBox.classList.remove('winner');
+      tigerBox.classList.remove('winner');
+      tieBox.classList.remove('winner');
+    }
 
-      let rem = amount;
-      let dep = Number(wallet.deposit);
-      let win = Number(wallet.winning);
+    socket.on('round_start', (data) => {
+      roundEl.innerText = `Round: #${data.roundId}`;
+      winnerEl.innerText = '⏳ Bets Open! Auto-profit active';
+      resetTable();
+      poolDragon.innerText = 'Total Bet: ₹0';
+      poolTiger.innerText = 'Total Bet: ₹0';
+      poolTie.innerText = 'Total Bet: ₹0';
+      log(`Round #${data.roundId} started.`);
+    });
 
-      if (dep >= rem) {
-        dep -= rem;
+    socket.on('timer_tick', (data) => {
+      if (data.state === 'BETTING') {
+        timerEl.innerText = `⏳ Betting Closes in: ${data.timeLeft}s`;
       } else {
-        rem -= dep;
-        dep = 0;
-        win -= rem;
+        timerEl.innerText = `Calculating Results (House Securing Profit)...`;
       }
+      if (data.bets) {
+        poolDragon.innerText = `Total Bet: ₹${data.bets.DRAGON}`;
+        poolTiger.innerText = `Total Bet: ₹${data.bets.TIGER}`;
+        poolTie.innerText = `Total Bet: ₹${data.bets.TIE}`;
+      }
+      if (data.controlMode) {
+        adminModeStatus.innerText = `Current Engine: ${data.controlMode}`;
+      }
+    });
 
-      await pool.query('UPDATE wallets SET deposit = $1, winning = $2 WHERE user_id = $3', [dep, win, userId]);
+    socket.on('bets_updated', (bets) => {
+      poolDragon.innerText = `Total Bet: ₹${bets.DRAGON}`;
+      poolTiger.innerText = `Total Bet: ₹${bets.TIGER}`;
+      poolTie.innerText = `Total Bet: ₹${bets.TIE}`;
+    });
 
-      const betRes = await pool.query(
-        'INSERT INTO bets (round_id, user_id, bet_on, amount) VALUES ($1, $2, $3, $4) RETURNING id',
-        [roundId, userId, betOn, amount]
-      );
+    socket.on('round_result', (data) => {
+      dragonCardEl.innerText = cardSymbol(data.dCard);
+      tigerCardEl.innerText = cardSymbol(data.tCard);
 
-      currentBets.push({ id: betRes.rows[0].id, user_id: userId, bet_on: betOn, amount });
-      socket.emit('wallet_update', { deposit: dep, winning: win, bonus: wallet.bonus });
-      socket.emit('bet_success', { betOn, amount });
-    } catch (e) {
-      console.error(e);
+      const winner = data.winner ? data.winner.toUpperCase() : '';
+      winnerEl.innerText = `🏆 WINNER: ${winner}!`;
+
+      if (winner === 'DRAGON') dragonBox.classList.add('winner');
+      if (winner === 'TIGER') tigerBox.classList.add('winner');
+      if (winner === 'TIE') tieBox.classList.add('winner');
+
+      log(`Round Result: Dragon [${cardSymbol(data.dCard)}] vs Tiger [${cardSymbol(data.tCard)}] -> ${winner} Wins!`);
+    });
+
+    // Player Place Bet
+    function placeBet(choice, amt) {
+      socket.emit('place_bet', { bet_on: choice, amount: amt });
+      log(`Placed bet: ₹${amt} on ${choice}`);
     }
-  });
-});
 
-app.get('/', (req, res) => res.send('Dragon Alpha Server Running'));
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    // Admin Control Function
+    function setAdminWinner(choice) {
+      socket.emit('admin_set_winner', { winner: choice });
+      if (choice === 'AUTO') {
+        adminModeStatus.innerText = 'Current Engine: Auto-Profit (Kam Bet Jeetegi)';
+        alert('Mode set to: AUTO PROFIT (Whichever side has lowest bets will win)');
+      } else {
+        adminModeStatus.innerText = `Current Engine: FORCED ${choice}`;
+        alert(`Next round is FORCED to win for: ${choice}`);
+      }
+    }
+  </script>
+</body>
+</html>
