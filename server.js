@@ -4,7 +4,6 @@ const { Server } = require('socket.io');
 
 const app = express();
 
-// CORS allow karna
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', '*');
@@ -15,16 +14,16 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: "*" }
-});
+const io = new Server(server, { cors: { origin: "*" } });
 
 // ==========================================
 // 🎨 COLOR PREDICTION GAME LOGIC
 // ==========================================
 let colorTimer = 30;
 let colorRoundId = "DA-" + Math.floor(100000 + Math.random() * 900000);
-let manualColorResult = null; // Admin choice
+
+// Admin Mode: 'AUTO', 'RED', 'GREEN', ya 'VIOLET' (hamesha bana rahega jab tak badle na)
+let currentMode = 'AUTO'; 
 
 let colorBets = {
   RED: { total: 0, users: 0 },
@@ -34,15 +33,13 @@ let colorBets = {
 
 let liveUsers = 0;
 
-// Har second chalne wala loop
 setInterval(async () => {
   colorTimer--;
 
-  // 30 seconds khatam: Result declare
   if (colorTimer <= 0) {
     await declareColorResult();
 
-    // Naya Round Reset
+    // Naya Round shuru
     colorTimer = 30;
     colorRoundId = "DA-" + Math.floor(100000 + Math.random() * 900000);
     colorBets = {
@@ -50,31 +47,34 @@ setInterval(async () => {
       GREEN: { total: 0, users: 0 },
       VIOLET: { total: 0, users: 0 }
     };
-    manualColorResult = null;
+    // currentMode ko reset NAHI kiya hai - ye continuous wahi rahega!
   }
 
-  // Live countdown aur status send karna
+  // Users ko tick bhejna
   io.to('room_color_game').emit('color_game_tick', {
     roundId: colorRoundId,
     timeLeft: colorTimer,
     bettingOpen: colorTimer > 5
   });
 
-  // Admin Dashboard ko update bhejna
+  // Admin Panel ko tick aur active mode bhejna
   io.to('admin_room').emit('admin_color_update', {
     roundId: colorRoundId,
     timeLeft: colorTimer,
     liveUsers: liveUsers,
-    bets: colorBets
+    bets: colorBets,
+    currentMode: currentMode
   });
 
 }, 1000);
 
 async function declareColorResult() {
-  let winner = manualColorResult;
+  let winner = null;
 
-  // Agar admin ne select nahi kiya, toh auto lowest bet wala color
-  if (!winner) {
+  if (currentMode !== 'AUTO') {
+    winner = currentMode; // Admin ki persistent choice
+  } else {
+    // Auto-profit: Sabse kam bet wala jitega
     const colors = ['RED', 'GREEN', 'VIOLET'];
     colors.sort((a, b) => colorBets[a].total - colorBets[b].total);
     winner = colors[0];
@@ -85,7 +85,7 @@ async function declareColorResult() {
     winningColor: winner
   });
 
-  // Supabase REST API
+  // Supabase Save
   const supabaseUrl = process.env.SUPABASE_URL || 'https://olmvohfxwzrmktdkxqms.supabase.co';
   const supabaseKey = process.env.SUPABASE_KEY;
 
@@ -127,7 +127,6 @@ io.on('connection', (socket) => {
 
   socket.on('place_color_bet', ({ color, amount }) => {
     if (colorTimer <= 5) return;
-
     if (colorBets[color]) {
       colorBets[color].total += Number(amount);
       colorBets[color].users += 1;
@@ -137,20 +136,29 @@ io.on('connection', (socket) => {
   socket.on('join_admin', (secret) => {
     if (secret === ADMIN_SECRET || secret === 'admin123') {
       socket.join('admin_room');
-      // Connect hote hi turant data bhejna
       socket.emit('admin_color_update', {
         roundId: colorRoundId,
         timeLeft: colorTimer,
         liveUsers: liveUsers,
-        bets: colorBets
+        bets: colorBets,
+        currentMode: currentMode
       });
     }
   });
 
-  socket.on('admin_set_color_winner', ({ secret, color }) => {
+  // Admin Mode Set karna ('AUTO', 'RED', 'GREEN', 'VIOLET')
+  socket.on('admin_set_color_mode', ({ secret, mode }) => {
     if (secret === ADMIN_SECRET || secret === 'admin123') {
-      manualColorResult = color;
-      console.log("Admin forced result:", color);
+      currentMode = mode;
+      console.log("Admin switched mode to:", currentMode);
+      
+      io.to('admin_room').emit('admin_color_update', {
+        roundId: colorRoundId,
+        timeLeft: colorTimer,
+        liveUsers: liveUsers,
+        bets: colorBets,
+        currentMode: currentMode
+      });
     }
   });
 
@@ -160,6 +168,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server live on port ${PORT}`));
