@@ -1,28 +1,30 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
-const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-app.use(cors());
+
+// Built-in CORS allow karna
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', '*');
+  res.header('Access-Control-Allow-Methods', '*');
+  next();
+});
+
 app.use(express.json());
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-
-// Supabase Connection
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+const io = new Server(server, {
+  cors: { origin: "*" }
+});
 
 // ==========================================
 // 🎨 COLOR PREDICTION GAME LOGIC
 // ==========================================
 let colorTimer = 30;
 let colorRoundId = "DA-" + Math.floor(100000 + Math.random() * 900000);
-let manualColorResult = null; // Admin ki choice
+let manualColorResult = null; // Admin choice
 
 let colorBets = {
   RED: { total: 0, users: 0 },
@@ -32,15 +34,15 @@ let colorBets = {
 
 let liveUsers = 0;
 
-// Har 1 Second me chalne wala Game Loop
+// Har second chalne wala loop
 setInterval(async () => {
   colorTimer--;
 
-  // Jab 30 second poore ho jayein: Result Declare
+  // 30 seconds khatam: Result declare
   if (colorTimer <= 0) {
     await declareColorResult();
-    
-    // Naya round start
+
+    // Naya Round Reset
     colorTimer = 30;
     colorRoundId = "DA-" + Math.floor(100000 + Math.random() * 900000);
     colorBets = {
@@ -51,14 +53,14 @@ setInterval(async () => {
     manualColorResult = null;
   }
 
-  // Color Game screen wale users ko live timer bhejna
+  // Live countdown aur status send karna
   io.to('room_color_game').emit('color_game_tick', {
     roundId: colorRoundId,
     timeLeft: colorTimer,
     bettingOpen: colorTimer > 5
   });
 
-  // Admin Dashboard ko bet details aur timer bhejna
+  // Admin Dashboard ko update bhejna
   io.to('admin_room').emit('admin_color_update', {
     roundId: colorRoundId,
     timeLeft: colorTimer,
@@ -71,30 +73,43 @@ setInterval(async () => {
 async function declareColorResult() {
   let winner = manualColorResult;
 
-  // Agar admin ne select nahi kiya, toh automatically least bet wala color jitega
+  // Agar admin ne select nahi kiya, toh auto lowest bet wala color
   if (!winner) {
     const colors = ['RED', 'GREEN', 'VIOLET'];
     colors.sort((a, b) => colorBets[a].total - colorBets[b].total);
     winner = colors[0];
   }
 
-  // Sabhi users ko result send karna
   io.to('room_color_game').emit('color_round_result', {
     roundId: colorRoundId,
     winningColor: winner
   });
 
-  // Supabase Database me record save karna
-  try {
-    await supabase.from('color_rounds').insert([{
-      round_id: colorRoundId,
-      winning_color: winner,
-      total_red: colorBets.RED.total,
-      total_green: colorBets.GREEN.total,
-      total_violet: colorBets.VIOLET.total
-    }]);
-  } catch (err) {
-    console.error("DB Save Error:", err);
+  // Supabase REST API (Bina kisi external library ke data save karna)
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_KEY;
+
+  if (supabaseUrl && supabaseKey) {
+    try {
+      await fetch(`${supabaseUrl}/rest/v1/color_rounds`, {
+        method: 'POST',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify([{
+          round_id: colorRoundId,
+          winning_color: winner,
+          total_red: colorBets.RED.total,
+          total_green: colorBets.GREEN.total,
+          total_violet: colorBets.VIOLET.total
+        }])
+      });
+    } catch (err) {
+      console.error("Supabase Save Error:", err.message);
+    }
   }
 }
 
@@ -104,14 +119,12 @@ async function declareColorResult() {
 io.on('connection', (socket) => {
   liveUsers++;
 
-  // User Color Prediction game room join karega
   socket.on('join_color_game', () => {
     socket.join('room_color_game');
   });
 
-  // User Bet Lagayega
   socket.on('place_color_bet', ({ color, amount }) => {
-    if (colorTimer <= 5) return; // Aakhri 5 second me bet lock
+    if (colorTimer <= 5) return; // Last 5 seconds bet freeze
 
     if (colorBets[color]) {
       colorBets[color].total += Number(amount);
@@ -119,17 +132,16 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Admin Room Join (Password check)
   socket.on('join_admin', (secret) => {
     if (secret === process.env.ADMIN_SECRET) {
       socket.join('admin_room');
     }
   });
 
-  // Admin Result Set Karega (Manual Win)
   socket.on('admin_set_color_winner', ({ secret, color }) => {
     if (secret === process.env.ADMIN_SECRET) {
-      manualColorResult = color; // E.g., 'RED', 'GREEN', ya 'VIOLET'
+      manualColorResult = color;
+      console.log("Admin forced result:", color);
     }
   });
 
@@ -138,5 +150,7 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`Server live on port ${PORT}`));
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
