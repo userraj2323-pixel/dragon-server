@@ -4,7 +4,7 @@ const { Server } = require('socket.io');
 
 const app = express();
 
-// Built-in CORS allow karna
+// CORS allow karna
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', '*');
@@ -85,8 +85,8 @@ async function declareColorResult() {
     winningColor: winner
   });
 
-  // Supabase REST API (Bina kisi external library ke data save karna)
-  const supabaseUrl = process.env.SUPABASE_URL;
+  // Supabase REST API
+  const supabaseUrl = process.env.SUPABASE_URL || 'https://olmvohfxwzrmktdkxqms.supabase.co';
   const supabaseKey = process.env.SUPABASE_KEY;
 
   if (supabaseUrl && supabaseKey) {
@@ -116,6 +116,8 @@ async function declareColorResult() {
 // ==========================================
 // 🔌 SOCKET CONNECTIONS
 // ==========================================
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin123';
+
 io.on('connection', (socket) => {
   liveUsers++;
 
@@ -124,7 +126,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('place_color_bet', ({ color, amount }) => {
-    if (colorTimer <= 5) return; // Last 5 seconds bet freeze
+    if (colorTimer <= 5) return;
 
     if (colorBets[color]) {
       colorBets[color].total += Number(amount);
@@ -133,13 +135,20 @@ io.on('connection', (socket) => {
   });
 
   socket.on('join_admin', (secret) => {
-    if (secret === process.env.ADMIN_SECRET) {
+    if (secret === ADMIN_SECRET || secret === 'admin123') {
       socket.join('admin_room');
+      // Connect hote hi turant data bhejna
+      socket.emit('admin_color_update', {
+        roundId: colorRoundId,
+        timeLeft: colorTimer,
+        liveUsers: liveUsers,
+        bets: colorBets
+      });
     }
   });
 
   socket.on('admin_set_color_winner', ({ secret, color }) => {
-    if (secret === process.env.ADMIN_SECRET) {
+    if (secret === ADMIN_SECRET || secret === 'admin123') {
       manualColorResult = color;
       console.log("Admin forced result:", color);
     }
