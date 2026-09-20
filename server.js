@@ -16,14 +16,12 @@ app.use(express.json());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-// ==========================================
-// 🎨 COLOR PREDICTION GAME LOGIC
-// ==========================================
+// ====================================================
+// 🎨 1. COLOR PREDICTION GAME LOGIC (For Android & Admin)
+// ====================================================
 let colorTimer = 30;
 let colorRoundId = "DA-" + Math.floor(100000 + Math.random() * 900000);
-
-// Admin Mode: 'AUTO', 'RED', 'GREEN', ya 'VIOLET' (hamesha bana rahega jab tak badle na)
-let currentMode = 'AUTO'; 
+let currentColorMode = 'AUTO'; 
 
 let colorBets = {
   RED: { total: 0, users: 0 },
@@ -39,7 +37,6 @@ setInterval(async () => {
   if (colorTimer <= 0) {
     await declareColorResult();
 
-    // Naya Round shuru
     colorTimer = 30;
     colorRoundId = "DA-" + Math.floor(100000 + Math.random() * 900000);
     colorBets = {
@@ -47,23 +44,20 @@ setInterval(async () => {
       GREEN: { total: 0, users: 0 },
       VIOLET: { total: 0, users: 0 }
     };
-    // currentMode ko reset NAHI kiya hai - ye continuous wahi rahega!
   }
 
-  // Users ko tick bhejna
   io.to('room_color_game').emit('color_game_tick', {
     roundId: colorRoundId,
     timeLeft: colorTimer,
     bettingOpen: colorTimer > 5
   });
 
-  // Admin Panel ko tick aur active mode bhejna
   io.to('admin_room').emit('admin_color_update', {
     roundId: colorRoundId,
     timeLeft: colorTimer,
     liveUsers: liveUsers,
     bets: colorBets,
-    currentMode: currentMode
+    currentMode: currentColorMode
   });
 
 }, 1000);
@@ -71,10 +65,9 @@ setInterval(async () => {
 async function declareColorResult() {
   let winner = null;
 
-  if (currentMode !== 'AUTO') {
-    winner = currentMode; // Admin ki persistent choice
+  if (currentColorMode !== 'AUTO') {
+    winner = currentColorMode;
   } else {
-    // Auto-profit: Sabse kam bet wala jitega
     const colors = ['RED', 'GREEN', 'VIOLET'];
     colors.sort((a, b) => colorBets[a].total - colorBets[b].total);
     winner = colors[0];
@@ -85,7 +78,6 @@ async function declareColorResult() {
     winningColor: winner
   });
 
-  // Supabase Save
   const supabaseUrl = process.env.SUPABASE_URL || 'https://olmvohfxwzrmktdkxqms.supabase.co';
   const supabaseKey = process.env.SUPABASE_KEY;
 
@@ -113,14 +105,122 @@ async function declareColorResult() {
   }
 }
 
-// ==========================================
-// 🔌 SOCKET CONNECTIONS
-// ==========================================
+// ====================================================
+// 🐉 2. DRAGON VS TIGER GAME LOGIC (For game.html)
+// ====================================================
+let dtRoundId = Math.floor(1000 + Math.random() * 9000);
+let dtTimer = 15;
+let dtState = 'BETTING'; // 'BETTING' or 'RESULT'
+let dtManualWinner = null; // 'DRAGON', 'TIGER', 'TIE', or null (AUTO)
+
+let dtBets = {
+  DRAGON: 0,
+  TIGER: 0,
+  TIE: 0
+};
+
+setInterval(() => {
+  dtTimer--;
+
+  if (dtState === 'BETTING') {
+    if (dtTimer <= 0) {
+      // Result Declare Phase
+      dtState = 'RESULT';
+      dtTimer = 5; // 5 seconds result screen display
+
+      const result = calculateDragonTigerResult();
+
+      io.emit('round_result', {
+        dCard: result.dCard,
+        tCard: result.tCard,
+        winner: result.winner
+      });
+    } else {
+      io.emit('timer_tick', {
+        state: 'BETTING',
+        timeLeft: dtTimer,
+        bets: dtBets
+      });
+    }
+  } else if (dtState === 'RESULT') {
+    if (dtTimer <= 0) {
+      // New Round Start
+      dtState = 'BETTING';
+      dtTimer = 15;
+      dtRoundId = Math.floor(1000 + Math.random() * 9000);
+      dtBets = { DRAGON: 0, TIGER: 0, TIE: 0 };
+
+      io.emit('round_start', {
+        roundId: dtRoundId,
+        manualWinner: dtManualWinner
+      });
+    }
+  }
+}, 1000);
+
+function calculateDragonTigerResult() {
+  let winner = dtManualWinner;
+
+  // Auto-profit: Jis taraf sabse kam bet lagi ho wo jitega
+  if (!winner || winner === 'AUTO') {
+    if (dtBets.DRAGON < dtBets.TIGER) {
+      winner = 'DRAGON';
+    } else if (dtBets.TIGER < dtBets.DRAGON) {
+      winner = 'TIGER';
+    } else {
+      winner = Math.random() > 0.5 ? 'DRAGON' : 'TIGER';
+    }
+  }
+
+  let dCard = 1, tCard = 1;
+
+  if (winner === 'DRAGON') {
+    dCard = Math.floor(Math.random() * 11) + 3; // 3 to 13
+    tCard = Math.floor(Math.random() * (dCard - 1)) + 1; // less than dCard
+  } else if (winner === 'TIGER') {
+    tCard = Math.floor(Math.random() * 11) + 3; // 3 to 13
+    dCard = Math.floor(Math.random() * (tCard - 1)) + 1; // less than tCard
+  } else {
+    // TIE
+    const cardVal = Math.floor(Math.random() * 13) + 1;
+    dCard = cardVal;
+    tCard = cardVal;
+  }
+
+  return { dCard, tCard, winner };
+}
+
+// ====================================================
+// 🔌 3. UNIFIED SOCKET CONNECTIONS
+// ====================================================
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin123';
 
 io.on('connection', (socket) => {
   liveUsers++;
 
+  // --- Dragon Tiger Handlers ---
+  socket.emit('admin_status_update', {
+    manualWinner: dtManualWinner,
+    bets: dtBets
+  });
+
+  socket.on('place_bet', ({ bet_on, amount }) => {
+    if (dtState !== 'BETTING' || dtTimer <= 1) return;
+    if (dtBets[bet_on] !== undefined) {
+      dtBets[bet_on] += Number(amount);
+      io.emit('bets_updated', dtBets);
+    }
+  });
+
+  socket.on('admin_set_winner', ({ winner }) => {
+    dtManualWinner = (winner === 'AUTO') ? null : winner;
+    io.emit('admin_status_update', {
+      manualWinner: dtManualWinner,
+      bets: dtBets
+    });
+  });
+
+  // --- Color Game Handlers ---
   socket.on('join_color_game', () => {
     socket.join('room_color_game');
   });
@@ -141,23 +241,20 @@ io.on('connection', (socket) => {
         timeLeft: colorTimer,
         liveUsers: liveUsers,
         bets: colorBets,
-        currentMode: currentMode
+        currentMode: currentColorMode
       });
     }
   });
 
-  // Admin Mode Set karna ('AUTO', 'RED', 'GREEN', 'VIOLET')
   socket.on('admin_set_color_mode', ({ secret, mode }) => {
     if (secret === ADMIN_SECRET || secret === 'admin123') {
-      currentMode = mode;
-      console.log("Admin switched mode to:", currentMode);
-      
+      currentColorMode = mode;
       io.to('admin_room').emit('admin_color_update', {
         roundId: colorRoundId,
         timeLeft: colorTimer,
         liveUsers: liveUsers,
         bets: colorBets,
-        currentMode: currentMode
+        currentMode: currentColorMode
       });
     }
   });
@@ -168,4 +265,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => console.log(`Server live on port ${PORT}`));
+server.listen(PORT, () => console.log(`Master Server running on port ${PORT}`));
