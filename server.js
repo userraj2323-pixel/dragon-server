@@ -17,7 +17,7 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 // ====================================================
-// 🎨 1. COLOR PREDICTION GAME LOGIC (For Android & Admin)
+// 🎨 1. COLOR PREDICTION GAME LOGIC (Bilkul Safe)
 // ====================================================
 let colorTimer = 30;
 let colorRoundId = "DA-" + Math.floor(100000 + Math.random() * 900000);
@@ -106,12 +106,12 @@ async function declareColorResult() {
 }
 
 // ====================================================
-// 🐉 2. DRAGON VS TIGER GAME LOGIC (For game.html)
+// 🐉 2. DRAGON VS TIGER GAME LOGIC (Bilkul Safe)
 // ====================================================
 let dtRoundId = Math.floor(1000 + Math.random() * 9000);
 let dtTimer = 15;
-let dtState = 'BETTING'; // 'BETTING' or 'RESULT'
-let dtManualWinner = null; // 'DRAGON', 'TIGER', 'TIE', or null (AUTO)
+let dtState = 'BETTING'; 
+let dtManualWinner = null; 
 
 let dtBets = {
   DRAGON: 0,
@@ -124,9 +124,8 @@ setInterval(() => {
 
   if (dtState === 'BETTING') {
     if (dtTimer <= 0) {
-      // Result Declare Phase
       dtState = 'RESULT';
-      dtTimer = 5; // 5 seconds result screen display
+      dtTimer = 5; 
 
       const result = calculateDragonTigerResult();
 
@@ -144,7 +143,6 @@ setInterval(() => {
     }
   } else if (dtState === 'RESULT') {
     if (dtTimer <= 0) {
-      // New Round Start
       dtState = 'BETTING';
       dtTimer = 15;
       dtRoundId = Math.floor(1000 + Math.random() * 9000);
@@ -161,7 +159,6 @@ setInterval(() => {
 function calculateDragonTigerResult() {
   let winner = dtManualWinner;
 
-  // Auto-profit: Jis taraf sabse kam bet lagi ho wo jitega
   if (!winner || winner === 'AUTO') {
     if (dtBets.DRAGON < dtBets.TIGER) {
       winner = 'DRAGON';
@@ -175,13 +172,12 @@ function calculateDragonTigerResult() {
   let dCard = 1, tCard = 1;
 
   if (winner === 'DRAGON') {
-    dCard = Math.floor(Math.random() * 11) + 3; // 3 to 13
-    tCard = Math.floor(Math.random() * (dCard - 1)) + 1; // less than dCard
+    dCard = Math.floor(Math.random() * 11) + 3;
+    tCard = Math.floor(Math.random() * (dCard - 1)) + 1;
   } else if (winner === 'TIGER') {
-    tCard = Math.floor(Math.random() * 11) + 3; // 3 to 13
-    dCard = Math.floor(Math.random() * (tCard - 1)) + 1; // less than tCard
+    tCard = Math.floor(Math.random() * 11) + 3;
+    dCard = Math.floor(Math.random() * (tCard - 1)) + 1;
   } else {
-    // TIE
     const cardVal = Math.floor(Math.random() * 13) + 1;
     dCard = cardVal;
     tCard = cardVal;
@@ -191,14 +187,109 @@ function calculateDragonTigerResult() {
 }
 
 // ====================================================
-// 🔌 3. UNIFIED SOCKET CONNECTIONS
+// 🦁 3. ZOO ROULETTE GAME LOGIC (Auto-Profit & Admin Control)
+// ====================================================
+const ZOO_ANIMALS = {
+  swallow: { id: "swallow", multiplier: 6 },
+  rabbit: { id: "rabbit", multiplier: 6 },
+  monkey: { id: "monkey", multiplier: 8 },
+  panda: { id: "panda", multiplier: 8 },
+  peacock: { id: "peacock", multiplier: 8 },
+  pigeon: { id: "pigeon", multiplier: 8 },
+  eagle: { id: "eagle", multiplier: 12 },
+  lion: { id: "lion", multiplier: 12 },
+  silver_shark: { id: "silver_shark", multiplier: 24 },
+  gold_shark: { id: "gold_shark", multiplier: 24 }
+};
+
+let zooTimer = 15;
+let zooState = 'BETTING'; // 'BETTING', 'SPINNING', 'SETTLING'
+let zooManualWinner = null;
+let zooBets = {}; // Har animal par kitni bet lagi hai
+
+function resetZooBets() {
+  zooBets = {};
+  Object.keys(ZOO_ANIMALS).forEach(id => zooBets[id] = 0);
+}
+resetZooBets();
+
+// Admin Force Result Link (e.g. /admin/zoo/force/lion)
+app.get("/admin/zoo/force/:animal", (req, res) => {
+  const chosen = req.params.animal;
+  if (ZOO_ANIMALS[chosen]) {
+    zooManualWinner = chosen;
+    res.json({ status: "success", message: `Zoo agle round ka winner set: ${chosen}` });
+  } else {
+    res.status(400).json({ status: "error", message: "Invalid animal id" });
+  }
+});
+
+// Auto-Profit Logic (Company hamesha profit me)
+function calculateZooWinner() {
+  if (zooManualWinner && ZOO_ANIMALS[zooManualWinner]) {
+    const forced = zooManualWinner;
+    zooManualWinner = null;
+    return forced;
+  }
+
+  let bestAnimal = "swallow";
+  let minPayout = Infinity;
+
+  for (let id in ZOO_ANIMALS) {
+    const payout = (zooBets[id] || 0) * ZOO_ANIMALS[id].multiplier;
+    if (payout < minPayout) {
+      minPayout = payout;
+      bestAnimal = id;
+    }
+  }
+  return bestAnimal;
+}
+
+// Zoo Roulette Game Loop
+setInterval(() => {
+  zooTimer--;
+
+  if (zooState === 'BETTING') {
+    if (zooTimer <= 0) {
+      zooState = 'SPINNING';
+      zooTimer = 8;
+      const winnerId = calculateZooWinner();
+
+      io.emit('zoo_round_result', {
+        winner: winnerId,
+        multiplier: ZOO_ANIMALS[winnerId].multiplier
+      });
+    } else {
+      io.emit('zoo_timer_update', {
+        timeLeft: zooTimer,
+        state: 'BETTING',
+        bets: zooBets
+      });
+    }
+  } else if (zooState === 'SPINNING') {
+    if (zooTimer <= 0) {
+      zooState = 'SETTLING';
+      zooTimer = 4;
+    }
+  } else if (zooState === 'SETTLING') {
+    if (zooTimer <= 0) {
+      zooState = 'BETTING';
+      zooTimer = 15;
+      resetZooBets();
+      io.emit('zoo_round_reset');
+    }
+  }
+}, 1000);
+
+// ====================================================
+// 🔌 4. UNIFIED SOCKET CONNECTIONS
 // ====================================================
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin123';
 
 io.on('connection', (socket) => {
   liveUsers++;
 
-  // --- Dragon Tiger Handlers ---
+  // --- Dragon Tiger Events ---
   socket.emit('admin_status_update', {
     manualWinner: dtManualWinner,
     bets: dtBets
@@ -220,7 +311,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  // --- Color Game Handlers ---
+  // --- Color Game Events ---
   socket.on('join_color_game', () => {
     socket.join('room_color_game');
   });
@@ -256,6 +347,21 @@ io.on('connection', (socket) => {
         bets: colorBets,
         currentMode: currentColorMode
       });
+    }
+  });
+
+  // --- Zoo Roulette Events ---
+  socket.emit('zoo_timer_update', {
+    timeLeft: zooTimer,
+    state: zooState,
+    bets: zooBets
+  });
+
+  socket.on('place_zoo_bet', ({ animal, amount }) => {
+    if (zooState !== 'BETTING' || zooTimer <= 1) return;
+    if (zooBets[animal] !== undefined) {
+      zooBets[animal] += Number(amount);
+      io.emit('zoo_bets_updated', zooBets);
     }
   });
 
