@@ -17,7 +17,7 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 // ====================================================
-// 🎨 1. COLOR PREDICTION GAME LOGIC (Bilkul Safe)
+// 🎨 1. COLOR PREDICTION GAME LOGIC
 // ====================================================
 let colorTimer = 30;
 let colorRoundId = "DA-" + Math.floor(100000 + Math.random() * 900000);
@@ -59,7 +59,6 @@ setInterval(async () => {
     bets: colorBets,
     currentMode: currentColorMode
   });
-
 }, 1000);
 
 async function declareColorResult() {
@@ -106,7 +105,7 @@ async function declareColorResult() {
 }
 
 // ====================================================
-// 🐉 2. DRAGON VS TIGER GAME LOGIC (Bilkul Safe)
+// 🐉 2. DRAGON VS TIGER GAME LOGIC
 // ====================================================
 let dtRoundId = Math.floor(1000 + Math.random() * 9000);
 let dtTimer = 15;
@@ -187,80 +186,90 @@ function calculateDragonTigerResult() {
 }
 
 // ====================================================
-// 🦁 3. ZOO ROULETTE GAME LOGIC (Auto-Profit & Admin Control)
+// 🦁 3. ZOO ROULETTE LOGIC (Auto-Profit + Force Control)
 // ====================================================
 const ZOO_ANIMALS = {
-  swallow: { id: "swallow", multiplier: 6 },
-  rabbit: { id: "rabbit", multiplier: 6 },
-  monkey: { id: "monkey", multiplier: 8 },
-  panda: { id: "panda", multiplier: 8 },
-  peacock: { id: "peacock", multiplier: 8 },
-  pigeon: { id: "pigeon", multiplier: 8 },
-  eagle: { id: "eagle", multiplier: 12 },
-  lion: { id: "lion", multiplier: 12 },
+  swallow:      { id: "swallow",      multiplier: 6  },
+  rabbit:       { id: "rabbit",       multiplier: 6  },
+  monkey:       { id: "monkey",       multiplier: 8  },
+  panda:        { id: "panda",        multiplier: 8  },
+  peacock:      { id: "peacock",      multiplier: 8  },
+  pigeon:       { id: "pigeon",       multiplier: 8  },
+  eagle:        { id: "eagle",        multiplier: 12 },
+  lion:         { id: "lion",         multiplier: 12 },
   silver_shark: { id: "silver_shark", multiplier: 24 },
-  gold_shark: { id: "gold_shark", multiplier: 24 }
+  gold_shark:   { id: "gold_shark",   multiplier: 24 }
 };
 
+let zooRoundId = Math.floor(10000 + Math.random() * 90000);
 let zooTimer = 15;
 let zooState = 'BETTING'; // 'BETTING', 'SPINNING', 'SETTLING'
-let zooManualWinner = null;
-let zooBets = {}; // Har animal par kitni bet lagi hai
+let zooManualWinner = null; 
+let zooBets = {};
 
-function resetZooBets() {
+function initZooBets() {
   zooBets = {};
-  Object.keys(ZOO_ANIMALS).forEach(id => zooBets[id] = 0);
+  for (let key in ZOO_ANIMALS) {
+    zooBets[key] = 0;
+  }
 }
-resetZooBets();
+initZooBets();
 
-// Admin Force Result Link (e.g. /admin/zoo/force/lion)
+// REST Endpoint: Force Winner
 app.get("/admin/zoo/force/:animal", (req, res) => {
-  const chosen = req.params.animal;
+  const chosen = req.params.animal.toLowerCase();
   if (ZOO_ANIMALS[chosen]) {
     zooManualWinner = chosen;
-    res.json({ status: "success", message: `Zoo agle round ka winner set: ${chosen}` });
+    res.json({ success: true, message: `Zoo next winner set to: ${chosen}` });
   } else {
-    res.status(400).json({ status: "error", message: "Invalid animal id" });
+    res.status(400).json({ success: false, message: `Invalid animal. Choose from: ${Object.keys(ZOO_ANIMALS).join(', ')}` });
   }
 });
 
-// Auto-Profit Logic (Company hamesha profit me)
+// Auto-Profit Algorithm: Minimum payout to users
 function calculateZooWinner() {
   if (zooManualWinner && ZOO_ANIMALS[zooManualWinner]) {
     const forced = zooManualWinner;
-    zooManualWinner = null;
+    zooManualWinner = null; // Single use override
     return forced;
   }
 
-  let bestAnimal = "swallow";
   let minPayout = Infinity;
+  let candidates = [];
 
   for (let id in ZOO_ANIMALS) {
     const payout = (zooBets[id] || 0) * ZOO_ANIMALS[id].multiplier;
     if (payout < minPayout) {
       minPayout = payout;
-      bestAnimal = id;
+      candidates = [id];
+    } else if (payout === minPayout) {
+      candidates.push(id);
     }
   }
-  return bestAnimal;
+
+  // Agar multiple animals ka payout same (ya 0) ho to unme se random pick
+  return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
-// Zoo Roulette Game Loop
+// Zoo Game Loop (Independent 1s ticker)
 setInterval(() => {
   zooTimer--;
 
   if (zooState === 'BETTING') {
     if (zooTimer <= 0) {
       zooState = 'SPINNING';
-      zooTimer = 8;
-      const winnerId = calculateZooWinner();
+      zooTimer = 8; // Wheel spinning duration
+
+      const winningAnimal = calculateZooWinner();
 
       io.emit('zoo_round_result', {
-        winner: winnerId,
-        multiplier: ZOO_ANIMALS[winnerId].multiplier
+        roundId: zooRoundId,
+        winner: winningAnimal,
+        multiplier: ZOO_ANIMALS[winningAnimal].multiplier
       });
     } else {
       io.emit('zoo_timer_update', {
+        roundId: zooRoundId,
         timeLeft: zooTimer,
         state: 'BETTING',
         bets: zooBets
@@ -269,27 +278,32 @@ setInterval(() => {
   } else if (zooState === 'SPINNING') {
     if (zooTimer <= 0) {
       zooState = 'SETTLING';
-      zooTimer = 4;
+      zooTimer = 3; // Win celebration display
     }
   } else if (zooState === 'SETTLING') {
     if (zooTimer <= 0) {
       zooState = 'BETTING';
       zooTimer = 15;
-      resetZooBets();
-      io.emit('zoo_round_reset');
+      zooRoundId = Math.floor(10000 + Math.random() * 90000);
+      initZooBets();
+
+      io.emit('zoo_round_reset', {
+        roundId: zooRoundId,
+        timeLeft: zooTimer
+      });
     }
   }
 }, 1000);
 
 // ====================================================
-// 🔌 4. UNIFIED SOCKET CONNECTIONS
+// 🔌 4. UNIFIED SOCKET DISPATCHER
 // ====================================================
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin123';
 
 io.on('connection', (socket) => {
   liveUsers++;
 
-  // --- Dragon Tiger Events ---
+  // --- Dragon Tiger Handlers ---
   socket.emit('admin_status_update', {
     manualWinner: dtManualWinner,
     bets: dtBets
@@ -311,7 +325,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  // --- Color Game Events ---
+  // --- Color Game Handlers ---
   socket.on('join_color_game', () => {
     socket.join('room_color_game');
   });
@@ -350,8 +364,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- Zoo Roulette Events ---
+  // --- Zoo Roulette Handlers ---
   socket.emit('zoo_timer_update', {
+    roundId: zooRoundId,
     timeLeft: zooTimer,
     state: zooState,
     bets: zooBets
@@ -365,10 +380,19 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('admin_set_zoo_winner', ({ animal }) => {
+    const chosen = (animal || '').toLowerCase();
+    if (ZOO_ANIMALS[chosen]) {
+      zooManualWinner = chosen;
+    } else if (animal === 'AUTO') {
+      zooManualWinner = null;
+    }
+  });
+
   socket.on('disconnect', () => {
     liveUsers = Math.max(0, liveUsers - 1);
   });
 });
 
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => console.log(`Master Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Unified Master Server running on port ${PORT}`));
