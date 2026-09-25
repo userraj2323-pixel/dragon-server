@@ -63,7 +63,6 @@ setInterval(async () => {
 
 async function declareColorResult() {
   let winner = null;
-
   if (currentColorMode !== 'AUTO') {
     winner = currentColorMode;
   } else {
@@ -112,11 +111,7 @@ let dtTimer = 15;
 let dtState = 'BETTING'; 
 let dtManualWinner = null; 
 
-let dtBets = {
-  DRAGON: 0,
-  TIGER: 0,
-  TIE: 0
-};
+let dtBets = { DRAGON: 0, TIGER: 0, TIE: 0 };
 
 setInterval(() => {
   dtTimer--;
@@ -125,7 +120,6 @@ setInterval(() => {
     if (dtTimer <= 0) {
       dtState = 'RESULT';
       dtTimer = 5; 
-
       const result = calculateDragonTigerResult();
 
       io.emit('round_result', {
@@ -157,7 +151,6 @@ setInterval(() => {
 
 function calculateDragonTigerResult() {
   let winner = dtManualWinner;
-
   if (!winner || winner === 'AUTO') {
     if (dtBets.DRAGON < dtBets.TIGER) {
       winner = 'DRAGON';
@@ -169,7 +162,6 @@ function calculateDragonTigerResult() {
   }
 
   let dCard = 1, tCard = 1;
-
   if (winner === 'DRAGON') {
     dCard = Math.floor(Math.random() * 11) + 3;
     tCard = Math.floor(Math.random() * (dCard - 1)) + 1;
@@ -181,12 +173,11 @@ function calculateDragonTigerResult() {
     dCard = cardVal;
     tCard = cardVal;
   }
-
   return { dCard, tCard, winner };
 }
 
 // ====================================================
-// 🦁 3. ZOO ROULETTE LOGIC (Auto-Profit + Force Control)
+// 🦁 3. ZOO ROULETTE LOGIC (Synchronized + Player & Bet Tracking)
 // ====================================================
 const ZOO_ANIMALS = {
   swallow:      { id: "swallow",      multiplier: 6  },
@@ -203,34 +194,47 @@ const ZOO_ANIMALS = {
 
 let zooRoundId = Math.floor(10000 + Math.random() * 90000);
 let zooTimer = 15;
-let zooState = 'BETTING'; // 'BETTING', 'SPINNING', 'SETTLING'
+let zooState = 'BETTING'; 
 let zooManualWinner = null; 
-let zooBets = {};
+let zooLivePlayers = 0;
 
+// Har animal par total amount aur user IDs ka track
+let zooBets = {};
 function initZooBets() {
   zooBets = {};
   for (let key in ZOO_ANIMALS) {
-    zooBets[key] = 0;
+    zooBets[key] = { amount: 0, players: new Set() };
   }
 }
 initZooBets();
 
-// REST Endpoint: Force Winner
+function getFormattedZooBets() {
+  const formatted = {};
+  for (let key in zooBets) {
+    formatted[key] = {
+      amount: zooBets[key].amount,
+      playerCount: zooBets[key].players.size
+    };
+  }
+  return formatted;
+}
+
+// Admin Force REST Endpoint
 app.get("/admin/zoo/force/:animal", (req, res) => {
   const chosen = req.params.animal.toLowerCase();
   if (ZOO_ANIMALS[chosen]) {
     zooManualWinner = chosen;
     res.json({ success: true, message: `Zoo next winner set to: ${chosen}` });
   } else {
-    res.status(400).json({ success: false, message: `Invalid animal. Choose from: ${Object.keys(ZOO_ANIMALS).join(', ')}` });
+    res.status(400).json({ success: false, message: `Invalid animal id` });
   }
 });
 
-// Auto-Profit Algorithm: Minimum payout to users
+// Auto-Profit Logic
 function calculateZooWinner() {
   if (zooManualWinner && ZOO_ANIMALS[zooManualWinner]) {
     const forced = zooManualWinner;
-    zooManualWinner = null; // Single use override
+    zooManualWinner = null; 
     return forced;
   }
 
@@ -238,7 +242,7 @@ function calculateZooWinner() {
   let candidates = [];
 
   for (let id in ZOO_ANIMALS) {
-    const payout = (zooBets[id] || 0) * ZOO_ANIMALS[id].multiplier;
+    const payout = zooBets[id].amount * ZOO_ANIMALS[id].multiplier;
     if (payout < minPayout) {
       minPayout = payout;
       candidates = [id];
@@ -247,18 +251,17 @@ function calculateZooWinner() {
     }
   }
 
-  // Agar multiple animals ka payout same (ya 0) ho to unme se random pick
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
-// Zoo Game Loop (Independent 1s ticker)
+// Zoo Master Loop
 setInterval(() => {
   zooTimer--;
 
   if (zooState === 'BETTING') {
     if (zooTimer <= 0) {
       zooState = 'SPINNING';
-      zooTimer = 8; // Wheel spinning duration
+      zooTimer = 8; 
 
       const winningAnimal = calculateZooWinner();
 
@@ -272,13 +275,14 @@ setInterval(() => {
         roundId: zooRoundId,
         timeLeft: zooTimer,
         state: 'BETTING',
-        bets: zooBets
+        livePlayers: zooLivePlayers > 0 ? zooLivePlayers : liveUsers,
+        bets: getFormattedZooBets()
       });
     }
   } else if (zooState === 'SPINNING') {
     if (zooTimer <= 0) {
       zooState = 'SETTLING';
-      zooTimer = 3; // Win celebration display
+      zooTimer = 3;
     }
   } else if (zooState === 'SETTLING') {
     if (zooTimer <= 0) {
@@ -289,14 +293,15 @@ setInterval(() => {
 
       io.emit('zoo_round_reset', {
         roundId: zooRoundId,
-        timeLeft: zooTimer
+        timeLeft: zooTimer,
+        bets: getFormattedZooBets()
       });
     }
   }
 }, 1000);
 
 // ====================================================
-// 🔌 4. UNIFIED SOCKET DISPATCHER
+// 🔌 4. UNIFIED SOCKET CONNECTIONS
 // ====================================================
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin123';
 
@@ -326,9 +331,7 @@ io.on('connection', (socket) => {
   });
 
   // --- Color Game Handlers ---
-  socket.on('join_color_game', () => {
-    socket.join('room_color_game');
-  });
+  socket.on('join_color_game', () => socket.join('room_color_game'));
 
   socket.on('place_color_bet', ({ color, amount }) => {
     if (colorTimer <= 5) return;
@@ -365,18 +368,28 @@ io.on('connection', (socket) => {
   });
 
   // --- Zoo Roulette Handlers ---
+  socket.on('join_zoo_game', () => {
+    socket.isZoo = true;
+    zooLivePlayers++;
+    io.emit('zoo_players_count', { livePlayers: zooLivePlayers });
+  });
+
   socket.emit('zoo_timer_update', {
     roundId: zooRoundId,
     timeLeft: zooTimer,
     state: zooState,
-    bets: zooBets
+    livePlayers: zooLivePlayers > 0 ? zooLivePlayers : liveUsers,
+    bets: getFormattedZooBets()
   });
 
   socket.on('place_zoo_bet', ({ animal, amount }) => {
     if (zooState !== 'BETTING' || zooTimer <= 1) return;
-    if (zooBets[animal] !== undefined) {
-      zooBets[animal] += Number(amount);
-      io.emit('zoo_bets_updated', zooBets);
+    const a = (animal || '').toLowerCase();
+    const amt = Number(amount);
+    if (zooBets[a] && amt > 0) {
+      zooBets[a].amount += amt;
+      zooBets[a].players.add(socket.id);
+      io.emit('zoo_bets_updated', getFormattedZooBets());
     }
   });
 
@@ -390,9 +403,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    if (socket.isZoo) {
+      zooLivePlayers = Math.max(0, zooLivePlayers - 1);
+      io.emit('zoo_players_count', { livePlayers: zooLivePlayers });
+    }
     liveUsers = Math.max(0, liveUsers - 1);
   });
 });
 
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => console.log(`Unified Master Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Master Server running on port ${PORT}`));
