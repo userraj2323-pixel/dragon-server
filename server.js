@@ -177,7 +177,7 @@ function calculateDragonTigerResult() {
 }
 
 // ====================================================
-// 🦁 3. ZOO ROULETTE LOGIC (Synchronized + Player & Bet Tracking)
+// 🦁 3. ZOO ROULETTE LOGIC (Persistent Admin Lock & Auto-Profit)
 // ====================================================
 const ZOO_ANIMALS = {
   swallow:      { id: "swallow",      multiplier: 6  },
@@ -195,10 +195,9 @@ const ZOO_ANIMALS = {
 let zooRoundId = Math.floor(10000 + Math.random() * 90000);
 let zooTimer = 15;
 let zooState = 'BETTING'; 
-let zooManualWinner = null; 
+let currentZooMode = 'AUTO'; // 'AUTO' ya animal jaise 'lion', 'panda' (Permanent Lock)
 let zooLivePlayers = 0;
 
-// Har animal par total amount aur user IDs ka track
 let zooBets = {};
 function initZooBets() {
   zooBets = {};
@@ -219,30 +218,37 @@ function getFormattedZooBets() {
   return formatted;
 }
 
-// Admin Force REST Endpoint
+// REST Endpoint: Persistent Force Win ya Auto Switch
 app.get("/admin/zoo/force/:animal", (req, res) => {
   const chosen = req.params.animal.toLowerCase();
+  if (chosen === 'auto') {
+    currentZooMode = 'AUTO';
+    io.emit('zoo_mode_update', { currentMode: 'AUTO' });
+    return res.json({ success: true, mode: 'AUTO', message: "Auto-Profit Mode Activated" });
+  }
+
   if (ZOO_ANIMALS[chosen]) {
-    zooManualWinner = chosen;
-    res.json({ success: true, message: `Zoo next winner set to: ${chosen}` });
+    currentZooMode = chosen; // PERMANENT: Har round yahi jeetega jab tak change na karein
+    io.emit('zoo_mode_update', { currentMode: chosen });
+    return res.json({ success: true, mode: chosen, message: `Winner permanently set to: ${chosen}` });
   } else {
-    res.status(400).json({ success: false, message: `Invalid animal id` });
+    return res.status(400).json({ success: false, message: "Invalid animal id" });
   }
 });
 
-// Auto-Profit Logic
+// Winner Decider (Persistent Force vs Minimum Bet Auto-Profit)
 function calculateZooWinner() {
-  if (zooManualWinner && ZOO_ANIMALS[zooManualWinner]) {
-    const forced = zooManualWinner;
-    zooManualWinner = null; 
-    return forced;
+  // 1. Agar admin ne animal lock kar rakha hai, to wohi jeetega (Continuous Win)
+  if (currentZooMode !== 'AUTO' && ZOO_ANIMALS[currentZooMode]) {
+    return currentZooMode; 
   }
 
+  // 2. Agar AUTO mode hai: Jis par sabse kam payout ho (Admin / House Maximum Profit)
   let minPayout = Infinity;
   let candidates = [];
 
   for (let id in ZOO_ANIMALS) {
-    const payout = zooBets[id].amount * ZOO_ANIMALS[id].multiplier;
+    const payout = (zooBets[id]?.amount || 0) * ZOO_ANIMALS[id].multiplier;
     if (payout < minPayout) {
       minPayout = payout;
       candidates = [id];
@@ -254,7 +260,7 @@ function calculateZooWinner() {
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
-// Zoo Master Loop
+// Master Zoo Loop
 setInterval(() => {
   zooTimer--;
 
@@ -268,7 +274,8 @@ setInterval(() => {
       io.emit('zoo_round_result', {
         roundId: zooRoundId,
         winner: winningAnimal,
-        multiplier: ZOO_ANIMALS[winningAnimal].multiplier
+        multiplier: ZOO_ANIMALS[winningAnimal].multiplier,
+        currentMode: currentZooMode
       });
     } else {
       io.emit('zoo_timer_update', {
@@ -276,7 +283,8 @@ setInterval(() => {
         timeLeft: zooTimer,
         state: 'BETTING',
         livePlayers: zooLivePlayers > 0 ? zooLivePlayers : liveUsers,
-        bets: getFormattedZooBets()
+        bets: getFormattedZooBets(),
+        currentMode: currentZooMode
       });
     }
   } else if (zooState === 'SPINNING') {
@@ -294,7 +302,8 @@ setInterval(() => {
       io.emit('zoo_round_reset', {
         roundId: zooRoundId,
         timeLeft: zooTimer,
-        bets: getFormattedZooBets()
+        bets: getFormattedZooBets(),
+        currentMode: currentZooMode
       });
     }
   }
@@ -379,7 +388,8 @@ io.on('connection', (socket) => {
     timeLeft: zooTimer,
     state: zooState,
     livePlayers: zooLivePlayers > 0 ? zooLivePlayers : liveUsers,
-    bets: getFormattedZooBets()
+    bets: getFormattedZooBets(),
+    currentMode: currentZooMode
   });
 
   socket.on('place_zoo_bet', ({ animal, amount }) => {
@@ -393,13 +403,15 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Admin socket trigger for lock & auto
   socket.on('admin_set_zoo_winner', ({ animal }) => {
     const chosen = (animal || '').toLowerCase();
-    if (ZOO_ANIMALS[chosen]) {
-      zooManualWinner = chosen;
-    } else if (animal === 'AUTO') {
-      zooManualWinner = null;
+    if (chosen === 'auto') {
+      currentZooMode = 'AUTO';
+    } else if (ZOO_ANIMALS[chosen]) {
+      currentZooMode = chosen;
     }
+    io.emit('zoo_mode_update', { currentMode: currentZooMode });
   });
 
   socket.on('disconnect', () => {
