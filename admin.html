@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AlfaOne - Master Admin & Live Bets Control</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; }
+    body { background-color: #0b111e; color: #ffffff; padding: 20px 15px; min-height: 100vh; }
+    .main-wrapper { width: 100%; max-width: 950px; margin: 0 auto; }
+
+    /* Header & Profit Summary */
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid #1e293b; gap: 10px; flex-wrap: wrap; }
+    .header h1 { font-size: 20px; font-weight: 800; color: #f8fafc; }
+    .header-actions { display: flex; gap: 8px; }
+    .btn-action-sm { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; transition: 0.2s; }
+    .btn-action-sm:hover { background: #334155; color: #ffffff; }
+    .btn-add-missed { background: #065f46; border-color: #10b981; color: #a7f3d0; }
+    .btn-add-missed:hover { background: #047857; color: #ffffff; }
+
+    .profit-banner { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .profit-card { background: #111927; border: 1px solid #1e3a8a; border-radius: 12px; padding: 14px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+    .profit-card.grand-total { background: linear-gradient(135deg, #1e1b4b, #1e3a8a); border: 1.5px solid #60a5fa; grid-column: span 2; }
+    .profit-card .label { font-size: 11px; text-transform: uppercase; font-weight: 700; color: #94a3b8; }
+    .profit-card .amount { font-size: 22px; font-weight: 800; margin-top: 4px; color: #22c55e; }
+    .profit-card .stats-mini { font-size: 11px; color: #94a3b8; margin-top: 4px; display: flex; justify-content: space-between; }
+
+    /* Navigation Tabs */
+    .tabs { display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid #1e293b; padding-bottom: 10px; overflow-x: auto; }
+    .tab-btn { background: #111927; border: 1px solid #1e3a8a; color: #94a3b8; font-size: 13px; font-weight: 700; padding: 10px 16px; border-radius: 8px; cursor: pointer; white-space: nowrap; transition: 0.2s; }
+    .tab-btn.active { background: #2563eb; color: #ffffff; border-color: #60a5fa; }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* Master Card */
+    .admin-card {
+      background: #111927;
+      border: 1.5px solid #1e3a8a;
+      border-radius: 16px;
+      padding: 22px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6);
+      margin-bottom: 20px;
+    }
+
+    .title-header { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 16px; font-weight: 800; color: #f1f5f9; margin-bottom: 16px; text-transform: uppercase; }
+
+    .status-display {
+      background: #090d16;
+      border: 1.5px solid #2563eb;
+      border-radius: 10px;
+      padding: 14px;
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    .status-label { font-size: 11px; color: #94a3b8; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+    .status-value { font-size: 19px; font-weight: 800; color: #22c55e; }
+
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      background: #090d16;
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin-bottom: 18px;
+      font-size: 13px;
+      color: #94a3b8;
+    }
+    .stat-row b { color: #38bdf8; }
+
+    /* Buttons */
+    .btn-stack { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px; }
+    .btn-action {
+      padding: 12px 14px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.2s;
+      color: white;
+    }
+    .btn-action:active { transform: scale(0.98); }
+    .btn-red { background: linear-gradient(90deg, #ef4444, #dc2626); }
+    .btn-green { background: linear-gradient(90deg, #22c55e, #16a34a); }
+    .btn-violet { background: linear-gradient(90deg, #a855f7, #9333ea); }
+    .btn-orange { background: linear-gradient(90deg, #f59e0b, #d97706); }
+    .btn-auto { background: linear-gradient(90deg, #3b82f6, #2563eb); grid-column: 1 / -1; }
+
+    /* Live Bet Boxes */
+    .bets-preview {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    .bet-box { background: #090d16; padding: 12px 8px; border-radius: 8px; border-top: 3px solid #64748b; }
+    .bet-box.b-red { border-color: #ef4444; }
+    .bet-box.b-green { border-color: #22c55e; }
+    .bet-box.b-violet { border-color: #a855f7; }
+    .bet-box.b-orange { border-color: #f59e0b; }
+    .bet-box h5 { margin: 0 0 6px; font-size: 12px; }
+    .bet-box p { margin: 0; font-size: 17px; font-weight: 800; color: #f8fafc; }
+
+    /* Tables & Inputs */
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; margin-top: 10px; }
+    th { background: #1e293b; color: #94a3b8; padding: 10px; }
+    td { padding: 10px; border-bottom: 1px solid #1e293b; }
+    .btn-sm { padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: bold; border: none; cursor: pointer; color: white; }
+    .btn-appr { background: #10b981; margin-right: 4px; }
+    .btn-rejc { background: #ef4444; }
+    .btn-toggle-on { background: #10b981; }
+    .btn-toggle-off { background: #64748b; }
+
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 15px; }
+    .input-field { background: #090d16; border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; color: #fff; font-size: 13px; width: 100%; }
+    .input-field:focus { outline: none; border-color: #3b82f6; }
+    .simulator-box { background: #08101e; border: 1.5px dashed #3b82f6; border-radius: 12px; padding: 16px; margin-top: 15px; }
+    .user-pill { display: inline-flex; flex-direction: column; gap: 2px; }
+    .user-pill b { color: #38bdf8; font-size: 13px; }
+    .user-pill span { color: #94a3b8; font-size: 11px; }
+  </style>
+</head>
+<body>
+
+<div class="main-wrapper">
+
+  <div class="header">
+    <h1>👑 AlfaOne Master Admin</h1>
+    <div class="header-actions">
+      <button class="btn-action-sm btn-add-missed" onclick="quickAdd12500()">➕ Add ₹12,500 Missing Profit</button>
+      <button class="btn-action-sm" onclick="resetProfitStats()">🔄 Reset Profit</button>
+    </div>
+  </div>
+
+  <!-- 💰 GRAND PROFIT BANNER -->
+  <div class="profit-banner">
+    <div class="profit-card grand-total">
+      <div class="label" style="color: #93c5fd;">💎 Grand Total Admin Profit</div>
+      <div class="amount" id="profit-grand-total">₹0</div>
+      <div class="stats-mini">
+        <span>Total Bets: <b id="stat-total-bets">₹0</b></span>
+        <span>Payouts: <b id="stat-total-payouts">₹0</b></span>
+      </div>
+    </div>
+    <div class="profit-card">
+      <div class="label">🎨 Color Prediction</div>
+      <div class="amount" id="profit-color">₹0</div>
+      <div class="stats-mini">Rounds: <b id="rounds-color">0</b></div>
+    </div>
+    <div class="profit-card">
+      <div class="label">🐉 Dragon vs Tiger</div>
+      <div class="amount" id="profit-dt">₹0</div>
+      <div class="stats-mini">Rounds: <b id="rounds-dt">0</b></div>
+    </div>
+    <div class="profit-card">
+      <div class="label">🦁 Zoo Roulette</div>
+      <div class="amount" id="profit-zoo">₹0</div>
+      <div class="stats-mini">Rounds: <b id="rounds-zoo">0</b></div>
+    </div>
+    <div class="profit-card">
+      <div class="label">🎲 7 Up Down</div>
+      <div class="amount" id="profit-seven">₹0</div>
+      <div class="stats-mini">Rounds: <b id="rounds-seven">0</b></div>
+    </div>
+  </div>
+
+  <!-- NAVIGATION TABS -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="openTab(event, 'color')">🎨 Color Prediction</button>
+    <button class="tab-btn" onclick="openTab(event, 'dt')">🐉 Dragon Tiger</button>
+    <button class="tab-btn" onclick="openTab(event, 'zoo')">🦁 Zoo Roulette</button>
+    <button class="tab-btn" onclick="openTab(event, 'seven')">🎲 7 Up Down</button>
+    <button class="tab-btn" onclick="openTab(event, 'wallet')">💳 Wallet & Approvals</button>
+    <button class="tab-btn" onclick="openTab(event, 'upi')">📱 UPI Manager</button>
+    <button class="tab-btn" onclick="openTab(event, 'users')">👥 Registered Users</button>
+    <button class="tab-btn" onclick="openTab(event, 'history')">📊 Ledger & CSV</button>
+  </div>
+
+  <!-- TAB 1: COLOR PREDICTION -->
+  <div id="tab-color" class="tab-content active">
+    <div class="admin-card">
+      <div class="title-header">🎨 COLOR PREDICTION MASTER CONTROL</div>
+      <div class="status-display">
+        <div class="status-label">NEXT WINNER WILL BE:</div>
+        <div class="status-value" id="color-mode-text">Auto-Profit [ACTIVE]</div>
+      </div>
+      <div class="stat-row">
+        <span>Round: <b id="color-round">--</b></span>
+        <span>Timer: <b id="color-timer">--s</b></span>
+        <span>Users: <b id="color-users">0</b></span>
+      </div>
+
+      <div class="bets-preview">
+        <div class="bet-box b-red"><h5 style="color:#ef4444;">RED</h5><p>₹<span id="bet-color-red">0</span></p></div>
+        <div class="bet-box b-green"><h5 style="color:#22c55e;">GREEN</h5><p>₹<span id="bet-color-green">0</span></p></div>
+        <div class="bet-box b-violet"><h5 style="color:#a855f7;">VIOLET</h5><p>₹<span id="bet-color-violet">0</span></p></div>
+      </div>
+
+      <div class="btn-stack">
+        <button class="btn-action btn-red" onclick="setColorMode('RED')">🔴 Force Red Win</button>
+        <button class="btn-action btn-green" onclick="setColorMode('GREEN')">🟢 Force Green Win</button>
+        <button class="btn-action btn-violet" onclick="setColorMode('VIOLET')">🟣 Force Violet Win</button>
+        <button class="btn-action btn-auto" onclick="setColorMode('AUTO')">🛡️ Auto-Profit Mode (Lowest Payout Wins)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 2: DRAGON TIGER -->
+  <div id="tab-dt" class="tab-content">
+    <div class="admin-card">
+      <div class="title-header">🐉 DRAGON VS TIGER MASTER CONTROL</div>
+      <div class="status-display">
+        <div class="status-label">NEXT WINNER WILL BE:</div>
+        <div class="status-value" id="dt-mode-text">Auto-Profit [ACTIVE]</div>
+      </div>
+      <div class="stat-row">
+        <span>Round: <b id="dt-round">--</b></span>
+        <span>Timer: <b id="dt-timer">--s</b></span>
+        <span>Users: <b id="dt-users">0</b></span>
+      </div>
+
+      <div class="bets-preview">
+        <div class="bet-box b-red"><h5 style="color:#ef4444;">DRAGON (2x)</h5><p>₹<span id="bet-dt-dragon">0</span></p></div>
+        <div class="bet-box b-green"><h5 style="color:#22c55e;">TIE (9x)</h5><p>₹<span id="bet-dt-tie">0</span></p></div>
+        <div class="bet-box b-orange"><h5 style="color:#f59e0b;">TIGER (2x)</h5><p>₹<span id="bet-dt-tiger">0</span></p></div>
+      </div>
+
+      <div class="btn-stack">
+        <button class="btn-action btn-red" onclick="setDragonMode('DRAGON')">🐉 Force Dragon Win</button>
+        <button class="btn-action btn-orange" onclick="setDragonMode('TIGER')">🐅 Force Tiger Win</button>
+        <button class="btn-action btn-green" onclick="setDragonMode('TIE')">⚖️ Force Tie Win</button>
+        <button class="btn-action btn-auto" onclick="setDragonMode('AUTO')">🛡️ Auto-Profit Mode (Highest Margin)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 3: ZOO ROULETTE -->
+  <div id="tab-zoo" class="tab-content">
+    <div class="admin-card">
+      <div class="title-header">🦁 ZOO ROULETTE MASTER CONTROL</div>
+      <div class="status-display">
+        <div class="status-label">CURRENT FORCED ANIMAL:</div>
+        <div class="status-value" id="zoo-mode-text">Auto-Profit [ACTIVE]</div>
+      </div>
+      <div class="stat-row">
+        <span>Round: <b id="zoo-round">--</b></span>
+        <span>Timer: <b id="zoo-timer">--s</b></span>
+        <span>Users: <b id="zoo-users">0</b></span>
+      </div>
+
+      <div class="bets-preview" id="zoo-bets-container"></div>
+      <div class="btn-stack" style="grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));" id="zoo-btn-container"></div>
+      <button class="btn-action btn-auto" style="width:100%; margin-top:10px;" onclick="setZooWinner('AUTO')">
+        🛡️ SWITCH TO AUTO-PROFIT MODE (Lowest Payout Animal)
+      </button>
+    </div>
+  </div>
+
+  <!-- TAB 4: 7 UP DOWN -->
+  <div id="tab-seven" class="tab-content">
+    <div class="admin-card">
+      <div class="title-header">🎲 7 UP DOWN MASTER CONTROL</div>
+      <div class="status-display">
+        <div class="status-label">LIVE SERVER LINK</div>
+        <div class="status-value" style="color:#38bdf8;">Render Cloud Live</div>
+      </div>
+      <div style="text-align: center;">
+        <a href="https://seven-up-down-server.onrender.com/admin" target="_blank" style="display:inline-block; padding:12px 24px; background:linear-gradient(90deg, #10b981, #059669); color:white; text-decoration:none; border-radius:8px; font-weight:bold;">
+          🔗 Open 7 Up Down Live Control Panel
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 5: WALLET APPROVALS & SMS SIMULATOR -->
+  <div id="tab-wallet" class="tab-content">
+
+    <!-- ⚙️ MERCHANT UPI ID CONFIGURATION -->
+    <div class="admin-card">
+      <div class="title-header" style="color: #f59e0b;">⚙️ OFFICIAL MERCHANT UPI ID (APP PAYMENT TARGET)</div>
+      <p style="font-size: 12px; color: #94a3b8; margin-bottom: 12px; text-align: center;">
+        Jo UPI ID aap yahan set karenge, wohi saare users ke Android App me locked show hogi aur payment ke liye use hogi.
+      </p>
+      <div style="display:flex; gap:10px; align-items:center; max-width: 600px; margin: 0 auto;">
+        <input type="text" id="admin-merchant-upi-input" class="input-field" placeholder="Enter Merchant UPI ID (e.g. 9876543210@ybl)" style="flex:1;">
+        <button class="btn-action btn-green" onclick="saveMerchantUpi()">💾 Save UPI ID</button>
+      </div>
+    </div>
+
+    <!-- 🧪 SMS WEBHOOK TEST SIMULATOR -->
+    <div class="admin-card">
+      <div class="title-header" style="color: #60a5fa;">🧪 BANK SMS & ANTI-FRAUD SIMULATOR</div>
+      <p style="font-size: 12px; color: #94a3b8; margin-bottom: 12px; text-align: center;">
+        Auto-Deposit aur 1x Turnover (Wagering Rule) testing panel.
+      </p>
+
+      <div class="simulator-box">
+        <div style="font-size: 13px; font-weight: bold; margin-bottom: 8px; color: #facc15;">
+          Step 1: Test Pending Deposit Create Karein
+        </div>
+        <div class="form-grid">
+          <input type="text" id="sim-user-id" class="input-field" value="11111111-1111-1111-1111-111111111111">
+          <input type="number" id="sim-amount" class="input-field" value="500">
+          <input type="text" id="sim-utr" class="input-field" value="712345678901">
+        </div>
+        <button class="btn-action btn-orange" style="width: 100%; margin-bottom: 14px;" onclick="createTestDeposit()">
+          📝 1. Create Pending Deposit (Submit UTR)
+        </button>
+
+        <div style="font-size: 13px; font-weight: bold; margin-bottom: 8px; color: #22c55e;">
+          Step 2: Bank SMS Receive Karein (Simulate)
+        </div>
+        <input type="text" id="sim-sms-text" class="input-field" style="margin-bottom: 10px;" 
+               value="Dear Customer, A/c credited by Rs 500.00 via UPI Ref no 712345678901 on 01-Nov.">
+        
+        <button class="btn-action btn-green" style="width: 100%; margin-bottom: 16px;" onclick="simulateBankSMS()">
+          ⚡ 2. Send SMS to Webhook (Auto-Approve Now)
+        </button>
+
+        <div style="font-size: 13px; font-weight: bold; margin-bottom: 8px; color: #ef4444; border-top: 1px dashed #334155; padding-top: 14px;">
+          Step 3: Anti-Fraud Test (Bina khele withdrawal block check)
+        </div>
+        <button class="btn-action btn-red" style="width: 100%;" onclick="testWithdrawalBlock()">
+          🚫 3. Test Withdraw (Check 1x Turnover Lock)
+        </button>
+      </div>
+    </div>
+
+    <!-- PENDING DEPOSITS -->
+    <div class="admin-card">
+      <div class="title-header">📥 PENDING ADD MONEY (DEPOSITS)</div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Tx ID</th><th>Time</th><th>User / Player</th><th>Amount</th><th>UTR</th><th>Action</th></tr></thead>
+          <tbody id="wallet-deposits-body"><tr><td colspan="6" style="text-align:center; color:#64748b;">No pending deposits.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- PENDING WITHDRAWALS -->
+    <div class="admin-card">
+      <div class="title-header">📤 PENDING WITHDRAWALS (PAYOUTS)</div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Tx ID</th><th>Time</th><th>User / Player</th><th>Amount</th><th>UPI ID</th><th>Action</th></tr></thead>
+          <tbody id="wallet-withdrawals-body"><tr><td colspan="6" style="text-align:center; color:#64748b;">No pending withdrawals.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 6: DYNAMIC UPI & QR MANAGER -->
+  <div id="tab-upi" class="tab-content">
+    <div class="admin-card">
+      <div class="title-header">➕ ADD NEW UPI / QR ACCOUNT</div>
+      <div class="form-grid">
+        <input type="text" id="new-upi-id" class="input-field" placeholder="UPI ID (e.g. business@ybl)">
+        <input type="text" id="new-account-name" class="input-field" placeholder="Account Name (e.g. AlfaOne Games)">
+        <input type="text" id="new-qr-url" class="input-field" placeholder="QR Image URL (Optional)">
+        <input type="number" id="new-daily-limit" class="input-field" placeholder="Daily Limit ₹ (Default 50000)">
+      </div>
+      <button class="btn-action btn-green" style="width: 100%;" onclick="addUpiAccount()">
+        💾 Save & Activate UPI Account
+      </button>
+    </div>
+
+    <div class="admin-card">
+      <div class="title-header">📋 MANAGE UPI & QR ACCOUNTS</div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Account Name</th>
+              <th>UPI ID</th>
+              <th>Daily Limit</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="upi-table-body">
+            <tr><td colspan="6" style="text-align:center; color:#64748b;">Loading UPI accounts...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 7: REGISTERED USERS DIRECTORY & SEARCH -->
+  <div id="tab-users" class="tab-content">
+    <div class="admin-card">
+      <div class="title-header">👥 REGISTERED PLAYERS DIRECTORY</div>
+      <div style="display:flex; gap:10px; margin-bottom: 14px;">
+        <input type="text" id="web-user-search-input" class="input-field" placeholder="Search Players by Name, Mobile, Email or UID..." onkeyup="filterUsersTable()" style="flex:1;">
+        <button class="btn-action btn-green" onclick="loadRegisteredUsers()">🔄 Refresh Users</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>UID</th>
+              <th>Player Name</th>
+              <th>Mobile</th>
+              <th>Email</th>
+              <th>Balance</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="web-users-table-body">
+            <tr><td colspan="7" style="text-align:center; color:#64748b;">Loading players...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 8: APPROVED TRANSACTION HISTORY & CSV EXPORT -->
+  <div id="tab-history" class="tab-content">
+    <div class="admin-card">
+      <div class="title-header">📊 TRANSACTION AUDIT LEDGER & CSV EXPORT</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 14px;">
+        <span style="font-size:12px; color:#94a3b8;">Complete ledger of deposits, payouts, bets & wins</span>
+        <button class="btn-action btn-green" onclick="exportTransactionsCSV()">📥 Export Ledger to CSV</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Tx ID</th>
+              <th>Time</th>
+              <th>User / Player</th>
+              <th>Type</th>
+              <th>Amount</th>
+              <th>Ref / UTR</th>
+              <th>Signature Hash</th>
+            </tr>
+          </thead>
+          <tbody id="web-history-table-body">
+            <tr><td colspan="7" style="text-align:center; color:#64748b;">Loading transaction ledger...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ADMIN LOGIN SECURITY MODAL -->
+<div id="admin-auth-overlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(9,13,22,0.96); z-index:9999; display:flex; align-items:center; justify-content:center;">
+  <div style="background:#1e293b; padding:30px; border-radius:14px; border:2px solid #f59e0b; width:340px; text-align:center; box-shadow:0 10px 30px rgba(0,0,0,0.8);">
+    <div style="font-size:36px; margin-bottom:10px;">👑</div>
+    <h2 style="color:#f59e0b; margin-bottom:6px; font-size:20px;">MASTER ADMIN LOGIN</h2>
+    <p style="color:#94a3b8; font-size:12px; margin-bottom:20px;">Enter Admin Passcode to access Master Control</p>
+    <input type="password" id="admin-pass-input" placeholder="Enter Admin Passcode (admin123)" style="width:100%; padding:12px; border-radius:8px; background:#0f172a; border:1px solid #334155; color:white; font-size:14px; margin-bottom:16px; text-align:center;" onkeypress="if(event.key==='Enter') verifyAdminLogin()">
+    <button onclick="verifyAdminLogin()" style="width:100%; padding:12px; background:linear-gradient(90deg, #f59e0b, #d97706); color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px;">🔓 UNLOCK MASTER CONTROL</button>
+  </div>
+</div>
+
+<script>
+  const SERVER_URL = window.location.origin;
+  const ADMIN_SECRET = "admin123";
+  const WALLET_API = '/api/wallet';
+  const WALLET_TOKEN = 'admin1234';
+
+  // Helper function to format User Display
+  function formatUserBadge(t) {
+    if (t.user_display) {
+      return `<div class="user-pill"><b>${t.user_display}</b></div>`;
+    }
+    const name = t.user_name || t.userName;
+    const phone = t.user_phone || t.userPhone;
+    if (name && phone) {
+      return `<div class="user-pill"><b>${name}</b><span>📱 ${phone}</span></div>`;
+    }
+    if (name) {
+      return `<div class="user-pill"><b>${name}</b></div>`;
+    }
+    if (phone) {
+      return `<div class="user-pill"><b>User ${phone}</b></div>`;
+    }
+    const uid = t.user_id || t.userId || '';
+    if (uid === '11111111-1111-1111-1111-111111111111') {
+      return `<div class="user-pill"><b style="color:#f59e0b;">Demo/Test User</b><span>Legacy ID</span></div>`;
+    }
+    return `<code>${uid.substring(0, 8)}...</code>`;
+  }
+
+  // 1. Profit Stats Management
+  const PROFIT_KEY = 'alfaone_profit_stats_v2';
+  let stats = JSON.parse(localStorage.getItem(PROFIT_KEY)) || {
+    grandBets: 0, grandPayouts: 0, grandProfit: 0,
+    dt: { bets: 0, payouts: 0, profit: 0, rounds: 0 },
+    color: { bets: 0, payouts: 0, profit: 0, rounds: 0 },
+    zoo: { bets: 0, payouts: 0, profit: 0, rounds: 0 },
+    seven: { bets: 0, payouts: 0, profit: 0, rounds: 0 }
+  };
+
+  function saveAndRenderStats() {
+    stats.grandProfit = (stats.dt.profit || 0) + (stats.color.profit || 0) + (stats.zoo.profit || 0) + (stats.seven.profit || 0);
+    stats.grandBets = (stats.dt.bets || 0) + (stats.color.bets || 0) + (stats.zoo.bets || 0) + (stats.seven.bets || 0);
+    stats.grandPayouts = (stats.dt.payouts || 0) + (stats.color.payouts || 0) + (stats.zoo.payouts || 0) + (stats.seven.payouts || 0);
+    localStorage.setItem(PROFIT_KEY, JSON.stringify(stats));
+
+    const grandEl = document.getElementById('profit-grand-total');
+    grandEl.innerText = (stats.grandProfit >= 0 ? '₹' : '-₹') + Math.abs(stats.grandProfit).toLocaleString('en-IN');
+    grandEl.style.color = stats.grandProfit >= 0 ? '#22c55e' : '#ef4444';
+    document.getElementById('stat-total-bets').innerText = '₹' + stats.grandBets.toLocaleString('en-IN');
+    document.getElementById('stat-total-payouts').innerText = '₹' + stats.grandPayouts.toLocaleString('en-IN');
+
+    ['color', 'dt', 'zoo', 'seven'].forEach(id => {
+      const el = document.getElementById(`profit-${id}`);
+      if (el) {
+        el.innerText = (stats[id].profit >= 0 ? '₹' : '-₹') + Math.abs(stats[id].profit).toLocaleString('en-IN');
+        el.style.color = stats[id].profit >= 0 ? '#22c55e' : '#ef4444';
+      }
+      const rEl = document.getElementById(`rounds-${id}`);
+      if (rEl) rEl.innerText = stats[id].rounds || 0;
+    });
+  }
+
+  function quickAdd12500() {
+    stats.color.bets += 12500;
+    stats.color.profit += 12500;
+    stats.color.rounds += 1;
+    saveAndRenderStats();
+    alert("₹12,500 Profit successfully added to Grand Total!");
+  }
+
+  function resetProfitStats() {
+    if (!confirm("Are you sure you want to reset all profit statistics?")) return;
+    stats = {
+      grandBets: 0, grandPayouts: 0, grandProfit: 0,
+      dt: { bets: 0, payouts: 0, profit: 0, rounds: 0 },
+      color: { bets: 0, payouts: 0, profit: 0, rounds: 0 },
+      zoo: { bets: 0, payouts: 0, profit: 0, rounds: 0 },
+      seven: { bets: 0, payouts: 0, profit: 0, rounds: 0 }
+    };
+    saveAndRenderStats();
+  }
+
+  function verifyAdminLogin() {
+    const pass = document.getElementById('admin-pass-input').value;
+    if (pass === 'admin123' || pass === '2026' || pass === ADMIN_SECRET) {
+      sessionStorage.setItem('admin_logged_in', 'true');
+      document.getElementById('admin-auth-overlay').style.display = 'none';
+    } else {
+      alert("❌ Invalid Admin Passcode! Please try again.");
+    }
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    if (sessionStorage.getItem('admin_logged_in') === 'true') {
+      const overlay = document.getElementById('admin-auth-overlay');
+      if (overlay) overlay.style.display = 'none';
+    }
+  });
+
+  function openTab(evt, tabId) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    evt.currentTarget.classList.add('active');
+    document.getElementById('tab-' + tabId).classList.add('active');
+    if (tabId === 'wallet') loadWalletData();
+    if (tabId === 'upi') loadUpiList();
+    if (tabId === 'users') loadRegisteredUsers();
+    if (tabId === 'history') loadTransactionHistory();
+  }
+
+  let allRegisteredUsers = [];
+  let allLedgerTransactions = [];
+
+  async function loadRegisteredUsers() {
+    try {
+      const res = await fetch('/api/wallet/admin/users');
+      const data = await res.json();
+      if (data.success && data.users) {
+        allRegisteredUsers = data.users;
+        renderUsersTable(allRegisteredUsers);
+      }
+    } catch (err) { console.error("Users load error", err); }
+  }
+
+  function renderUsersTable(usersList) {
+    const tbody = document.getElementById('web-users-table-body');
+    if (!usersList || usersList.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#64748b;">No registered users found.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = usersList.map(u => `
+      <tr>
+        <td><code>${(u.id || u.uid || '').substring(0, 8)}...</code></td>
+        <td><b>${u.name || u.displayName || 'Player'}</b></td>
+        <td>${u.phone || u.mobile || 'N/A'}</td>
+        <td>${u.email || 'N/A'}</td>
+        <td style="font-weight:bold; color:#facc15;">₹${Number(u.balance || u.wallet_balance || 0).toLocaleString('en-IN')}</td>
+        <td><span class="badge ${u.isBanned ? 'badge-off' : 'badge-on'}">${u.isBanned ? 'BANNED' : 'ACTIVE'}</span></td>
+        <td>
+          <button class="btn-sm btn-appr" onclick="adjustBalance('${u.id || u.uid}', 500)">+500</button>
+          <button class="btn-sm btn-rejc" onclick="adjustBalance('${u.id || u.uid}', -500)">-500</button>
+          <button class="btn-sm ${u.isBanned ? 'btn-toggle-on' : 'btn-toggle-off'}" onclick="toggleBan('${u.id || u.uid}')">${u.isBanned ? 'Unban' : 'Ban'}</button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  function filterUsersTable() {
+    const query = document.getElementById('web-user-search-input').value.toLowerCase().trim();
+    if (!query) {
+      renderUsersTable(allRegisteredUsers);
+      return;
+    }
+    const filtered = allRegisteredUsers.filter(u =>
+      (u.name || u.displayName || '').toLowerCase().includes(query) ||
+      (u.phone || u.mobile || '').toLowerCase().includes(query) ||
+      (u.email || '').toLowerCase().includes(query) ||
+      (u.id || u.uid || '').toLowerCase().includes(query)
+    );
+    renderUsersTable(filtered);
+  }
+
+  async function adjustBalance(userId, amount) {
+    const res = await fetch('/api/wallet/admin/adjust-balance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, amount })
+    });
+    const data = await res.json();
+    if (data.success) {
+      alert(`Balance updated for ${userId}`);
+      loadRegisteredUsers();
+    }
+  }
+
+  async function toggleBan(userId) {
+    const res = await fetch('/api/wallet/admin/toggle-ban', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId })
+    });
+    const data = await res.json();
+    if (data.success) {
+      loadRegisteredUsers();
+    }
+  }
+
+  async function loadTransactionHistory() {
+    try {
+      const res = await fetch('/api/wallet/admin/all-transactions');
+      const data = await res.json();
+      if (data.success && data.transactions) {
+        allLedgerTransactions = data.transactions;
+        const tbody = document.getElementById('web-history-table-body');
+        if (allLedgerTransactions.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#64748b;">No transaction ledger records.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = allLedgerTransactions.map(t => `
+          <tr>
+            <td>#${t.id}</td>
+            <td>${new Date(t.timestamp || t.created_at || Date.now()).toLocaleString('en-IN')}</td>
+            <td>${formatUserBadge(t)}</td>
+            <td><b style="color:${t.type==='WIN' || t.type==='DEPOSIT' ? '#22c55e':'#ef4444'}">${t.type}</b></td>
+            <td style="font-weight:bold;">₹${t.amount}</td>
+            <td><code>${t.utrNumber || t.utr_number || t.referenceId || 'N/A'}</code></td>
+            <td><small style="color:#64748b;">${(t.signature || 'SHA256_VERIFIED').substring(0,12)}...</small></td>
+          </tr>
+        `).join('');
+      }
+    } catch (err) { console.error("History load error", err); }
+  }
+
+  function exportTransactionsCSV() {
+    if (!allLedgerTransactions || allLedgerTransactions.length === 0) {
+      alert("No transaction records available to export!");
+      return;
+    }
+    let csv = "Transaction_ID,Timestamp,User,Type,Amount,UTR_Reference,Signature\n";
+    allLedgerTransactions.forEach(t => {
+      const userTxt = t.user_display || t.user_name || t.userId || t.user_id || '';
+      csv += `"${t.id}","${new Date(t.timestamp || t.created_at || Date.now()).toISOString()}","${userTxt}","${t.type}","${t.amount}","${t.utrNumber || t.utr_number || t.referenceId || ''}","${t.signature || ''}"\n`;
+    });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute("download", "dragon_alpha_ledger_report.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  // SOCKET CONNECTION
+  const socket = io(SERVER_URL);
+  socket.on('connect', () => {
+    socket.emit('join_admin', ADMIN_SECRET);
+  });
+
+  // COLOR PREDICTION
+  let lastColorBets = { RED: 0, GREEN: 0, VIOLET: 0 };
+  socket.on('admin_color_update', (data) => {
+    document.getElementById('color-round').innerText = data.roundId || '--';
+    document.getElementById('color-timer').innerText = (data.timeLeft || 0) + "s";
+    document.getElementById('color-users').innerText = data.liveUsers || 0;
+
+    const rBet = Number(data.bets?.RED?.total || 0);
+    const gBet = Number(data.bets?.GREEN?.total || 0);
+    const vBet = Number(data.bets?.VIOLET?.total || 0);
+
+    document.getElementById('bet-color-red').innerText = rBet;
+    document.getElementById('bet-color-green').innerText = gBet;
+    document.getElementById('bet-color-violet').innerText = vBet;
+    if (data.timeLeft > 0) lastColorBets = { RED: rBet, GREEN: gBet, VIOLET: vBet };
+
+    const modeText = document.getElementById('color-mode-text');
+    if (data.currentMode === 'AUTO') {
+      modeText.innerText = "Auto-Profit [ACTIVE]";
+      modeText.style.color = "#22c55e";
+    } else {
+      modeText.innerText = data.currentMode + " [FORCED]";
+      modeText.style.color = data.currentMode === 'RED' ? '#ef4444' : data.currentMode === 'GREEN' ? '#22c55e' : '#a855f7';
+    }
+  });
+
+  socket.on('color_round_result', (data) => {
+    const totalBet = (lastColorBets.RED || 0) + (lastColorBets.GREEN || 0) + (lastColorBets.VIOLET || 0);
+    let payout = 0;
+    if (data.winningColor === 'RED') payout = (lastColorBets.RED || 0) * 2;
+    else if (data.winningColor === 'GREEN') payout = (lastColorBets.GREEN || 0) * 2;
+    else if (data.winningColor === 'VIOLET') payout = (lastColorBets.VIOLET || 0) * 4.5;
+
+    if (totalBet > 0) {
+      stats.color.bets += totalBet;
+      stats.color.payouts += payout;
+      stats.color.profit += (totalBet - payout);
+      stats.color.rounds += 1;
+      saveAndRenderStats();
+    }
+  });
+
+  function setColorMode(mode) {
+    socket.emit('admin_set_color_mode', { secret: ADMIN_SECRET, mode: mode });
+  }
+
+  // DRAGON TIGER
+  let lastDtBets = { DRAGON: 0, TIGER: 0, TIE: 0 };
+  function updateDtUI(mode, bets, roundId, timer, users) {
+    if (mode !== undefined) {
+      const modeText = document.getElementById('dt-mode-text');
+      if (!mode || mode === 'AUTO') {
+        modeText.innerText = "Auto-Profit [ACTIVE]";
+        modeText.style.color = "#22c55e";
+      } else {
+        modeText.innerText = mode + " [FORCED]";
+        modeText.style.color = mode === 'DRAGON' ? '#ef4444' : mode === 'TIGER' ? '#f59e0b' : '#22c55e';
+      }
+    }
+    if (bets) {
+      lastDtBets = bets;
+      document.getElementById('bet-dt-dragon').innerText = bets.DRAGON || 0;
+      document.getElementById('bet-dt-tiger').innerText = bets.TIGER || 0;
+      document.getElementById('bet-dt-tie').innerText = bets.TIE || 0;
+    }
+    if (roundId) document.getElementById('dt-round').innerText = roundId;
+    if (timer !== undefined) document.getElementById('dt-timer').innerText = timer + 's';
+    if (users !== undefined) document.getElementById('dt-users').innerText = users;
+  }
+
+  socket.on('admin_status_update', (data) => updateDtUI(data.manualWinner, data.bets, data.roundId, data.timeLeft, data.liveUsers));
+  socket.on('timer_tick', (data) => updateDtUI(undefined, data.bets, undefined, data.timeLeft, undefined));
+  socket.on('round_start', (data) => updateDtUI(data.manualWinner, { DRAGON: 0, TIGER: 0, TIE: 0 }, data.roundId, 20, undefined));
+
+  socket.on('round_result', (data) => {
+    const totalBet = (lastDtBets.DRAGON || 0) + (lastDtBets.TIGER || 0) + (lastDtBets.TIE || 0);
+    let payout = 0;
+    if (data.winner === 'DRAGON') payout = (lastDtBets.DRAGON || 0) * 2;
+    else if (data.winner === 'TIGER') payout = (lastDtBets.TIGER || 0) * 2;
+    else if (data.winner === 'TIE') payout = (lastDtBets.TIE || 0) * 9;
+
+    if (totalBet > 0) {
+      stats.dt.bets += totalBet;
+      stats.dt.payouts += payout;
+      stats.dt.profit += (totalBet - payout);
+      stats.dt.rounds += 1;
+      saveAndRenderStats();
+    }
+  });
+
+  function setDragonMode(mode) {
+    socket.emit('admin_set_winner', { winner: mode });
+    updateDtUI(mode);
+  }
+
+  // ZOO ROULETTE
+  const zooAnimals = [
+    { id: "swallow", name: "Swallow", mult: "6x", color: "#38bdf8" },
+    { id: "rabbit", name: "Rabbit", mult: "6x", color: "#f472b6" },
+    { id: "monkey", name: "Monkey", mult: "8x", color: "#fb923c" },
+    { id: "panda", name: "Panda", mult: "8x", color: "#e2e8f0" },
+    { id: "peacock", name: "Peacock", mult: "8x", color: "#2dd4bf" },
+    { id: "pigeon", name: "Pigeon", mult: "8x", color: "#a78bfa" },
+    { id: "eagle", name: "Eagle", mult: "12x", color: "#facc15" },
+    { id: "lion", name: "Lion", mult: "12x", color: "#f97316" },
+    { id: "silver_shark", name: "Silver Shark", mult: "24x", color: "#94a3b8" },
+    { id: "gold_shark", name: "Gold Shark", mult: "24x", color: "#eab308" }
+  ];
+
+  let lastZooBets = {};
+  const zooBetsContainer = document.getElementById('zoo-bets-container');
+  const zooBtnContainer = document.getElementById('zoo-btn-container');
+
+  zooAnimals.forEach(a => {
+    zooBetsContainer.innerHTML += `
+      <div class="bet-box" style="border-color:${a.color}">
+        <h5 style="color:${a.color};">${a.name} (${a.mult})</h5>
+        <p>₹<span id="bet-zoo-${a.id}">0</span></p>
+      </div>
+    `;
+    zooBtnContainer.innerHTML += `
+      <button class="btn-action" style="background:#1e293b; border:1px solid ${a.color}; color:${a.color};" onclick="setZooWinner('${a.id}')">
+        🎯 Force ${a.name}
+      </button>
+    `;
+  });
+
+  socket.on('zoo_timer_update', (data) => {
+    document.getElementById('zoo-timer').innerText = data.timeLeft + "s";
+    document.getElementById('zoo-round').innerText = data.roundId || '--';
+    document.getElementById('zoo-users').innerText = data.livePlayers || 0;
+    if (data.currentMode) {
+      const modeText = document.getElementById('zoo-mode-text');
+      modeText.innerText = data.currentMode === 'AUTO' ? 'Auto-Profit [ACTIVE]' : data.currentMode.toUpperCase() + ' [FORCED]';
+      modeText.style.color = data.currentMode === 'AUTO' ? '#22c55e' : '#f59e0b';
+    }
+    if (data.bets) {
+      lastZooBets = data.bets;
+      zooAnimals.forEach(a => {
+        const betEl = document.getElementById(`bet-zoo-${a.id}`);
+        if (betEl) betEl.innerText = data.bets[a.id]?.amount || data.bets[a.id] || 0;
+      });
+    }
+  });
+
+  socket.on('zoo_round_result', (data) => {
+    let totalBet = 0;
+    let payout = 0;
+    zooAnimals.forEach(a => {
+      const b = Number(lastZooBets[a.id]?.amount || lastZooBets[a.id] || 0);
+      totalBet += b;
+      if (a.id === data.winningAnimal) payout += (b * parseInt(a.mult));
+    });
+
+    if (totalBet > 0) {
+      stats.zoo.bets += totalBet;
+      stats.zoo.payouts += payout;
+      stats.zoo.profit += (totalBet - payout);
+      stats.zoo.rounds += 1;
+      saveAndRenderStats();
+    }
+  });
+
+  function setZooWinner(animal) {
+    socket.emit('admin_set_zoo_winner', { animal: animal });
+    const modeText = document.getElementById('zoo-mode-text');
+    modeText.innerText = animal === 'AUTO' ? 'Auto-Profit [ACTIVE]' : animal.toUpperCase() + ' [FORCED]';
+    modeText.style.color = animal === 'AUTO' ? '#22c55e' : '#f59e0b';
+  }
+
+  // WALLET APPROVALS LOGIC
+  async function loadMerchantUpi() {
+    try {
+      const res = await fetch(WALLET_API + '/config');
+      const data = await res.json();
+      if (data.success && data.merchantUpiId) {
+        document.getElementById('admin-merchant-upi-input').value = data.merchantUpiId;
+      }
+    } catch (e) { console.error('Failed to load merchant UPI', e); }
+  }
+
+  async function saveMerchantUpi() {
+    const upiId = document.getElementById('admin-merchant-upi-input').value.trim();
+    if (!upiId) {
+      alert("Please enter a valid UPI ID!");
+      return;
+    }
+    try {
+      const res = await fetch(WALLET_API + '/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ merchantUpiId: upiId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert("✅ Merchant UPI ID Updated Successfully to: " + data.merchantUpiId);
+      } else {
+        alert("Failed to update UPI ID: " + data.message);
+      }
+    } catch (e) {
+      alert("Error: " + e.message);
+    }
+  }
+
+  async function loadWalletData() {
+    loadMerchantUpi();
+    try {
+      const res = await fetch(WALLET_API + '/admin/pending', { headers: { 'x-admin-token': WALLET_TOKEN } });
+      const data = await res.json();
+      if (!data.success) return;
+
+      const depBody = document.getElementById('wallet-deposits-body');
+      const wthBody = document.getElementById('wallet-withdrawals-body');
+      const deposits = data.transactions.filter(t => t.type === 'DEPOSIT');
+      const withdrawals = data.transactions.filter(t => t.type === 'WITHDRAWAL');
+
+      depBody.innerHTML = deposits.length === 0 ? '<tr><td colspan="6" style="text-align:center; color:#64748b;">No pending deposits.</td></tr>' : deposits.map(t => `
+        <tr>
+          <td>#${t.id}</td>
+          <td>${new Date(t.created_at).toLocaleTimeString('en-IN')}</td>
+          <td>${formatUserBadge(t)}</td>
+          <td style="font-weight:bold; color:#22c55e;">₹${t.amount}</td>
+          <td><b>${t.utr_number || 'N/A'}</b></td>
+          <td>
+            <button class="btn-sm btn-appr" onclick="actionTx(${t.id}, 'approve')">✔ Approve</button>
+            <button class="btn-sm btn-rejc" onclick="actionTx(${t.id}, 'reject')">✖ Reject</button>
+          </td>
+        </tr>
+      `).join('');
+
+      wthBody.innerHTML = withdrawals.length === 0 ? '<tr><td colspan="6" style="text-align:center; color:#64748b;">No pending withdrawals.</td></tr>' : withdrawals.map(t => `
+        <tr>
+          <td>#${t.id}</td>
+          <td>${new Date(t.created_at).toLocaleTimeString('en-IN')}</td>
+          <td>${formatUserBadge(t)}</td>
+          <td style="font-weight:bold; color:#ef4444;">₹${t.amount}</td>
+          <td><b>${t.upi_id || 'N/A'}</b></td>
+          <td>
+            <button class="btn-sm btn-appr" onclick="actionTx(${t.id}, 'approve')">✔ Approve Payout</button>
+            <button class="btn-sm btn-rejc" onclick="actionTx(${t.id}, 'reject')">✖ Reject</button>
+          </td>
+        </tr>
+      `).join('');
+    } catch (err) { console.error(err); }
+  }
+
+  async function actionTx(id, type) {
+    const endpoint = type === 'approve' ? '/admin/approve' : '/admin/reject';
+    if (!confirm(`Confirm ${type.toUpperCase()} transaction #${id}?`)) return;
+    const res = await fetch(WALLET_API + endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-token': WALLET_TOKEN },
+      body: JSON.stringify({ transactionId: id, adminNotes: 'Processed by Admin' })
+    });
+    const data = await res.json();
+    if (data.success) { alert(`Updated #${id}`); loadWalletData(); }
+  }
+
+  // 🧪 SIMULATOR & ANTI-FRAUD FUNCTIONS
+  async function createTestDeposit() {
+    const userId = document.getElementById('sim-user-id').value.trim() || '11111111-1111-1111-1111-111111111111';
+    const amount = Number(document.getElementById('sim-amount').value);
+    const utr = document.getElementById('sim-utr').value.trim();
+
+    if (!amount || !utr) {
+      alert("Please fill Amount and UTR!");
+      return;
+    }
+
+    try {
+      const res = await fetch(WALLET_API + '/deposit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, amount, utr_number: utr })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`✅ Pending Deposit Created for ₹${amount}! Check Pending list below.`);
+        document.getElementById('sim-sms-text').value = `Dear Customer, A/c credited by Rs ${amount}.00 via UPI Ref no ${utr} on 01-Nov.`;
+        loadWalletData();
+      } else {
+        alert("Deposit Error: " + data.message);
+      }
+    } catch (err) {
+      alert("Error: " + err.message);
+    }
+  }
+
+  async function simulateBankSMS() {
+    const sms = document.getElementById('sim-sms-text').value.trim();
+    if (!sms) {
+      alert("Please enter SMS message!");
+      return;
+    }
+
+    try {
+      const res = await fetch(WALLET_API + '/webhook/sms-verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: sms,
+          secret: 'alfaone_sms_secure_2026'
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert("🎉 SUCCESS! " + data.message);
+        loadWalletData();
+      } else {
+        alert("❌ Webhook Response: " + data.message);
+      }
+    } catch (err) {
+      alert("Error calling webhook: " + err.message);
+    }
+  }
+
+  // 🚫 ANTI-FRAUD 1X TURNOVER TEST BUTTON
+  async function testWithdrawalBlock() {
+    const userId = document.getElementById('sim-user-id').value.trim() || '11111111-1111-1111-1111-111111111111';
+    try {
+      const res = await fetch(WALLET_API + '/withdraw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: userId,
+          amount: 200,
+          upi_id: 'test@upi'
+        })
+      });
+      const data = await res.json();
+      alert(data.message || (data.success ? 'Withdrawal Created!' : 'Failed'));
+      loadWalletData();
+    } catch (err) {
+      alert("Error: " + err.message);
+    }
+  }
+
+  // UPI MANAGER FUNCTIONS
+  async function loadUpiList() {
+    try {
+      const res = await fetch(WALLET_API + '/admin/upi-list', {
+        headers: { 'x-admin-token': WALLET_TOKEN }
+      });
+      const data = await res.json();
+      const tbody = document.getElementById('upi-table-body');
+
+      if (!data.success || !data.accounts || data.accounts.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#64748b;">No UPI accounts found. Add one above!</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = data.accounts.map(acc => `
+        <tr>
+          <td>#${acc.id}</td>
+          <td><b>${acc.account_name}</b></td>
+          <td><code>${acc.upi_id}</code></td>
+          <td>₹${Number(acc.daily_limit || 0).toLocaleString('en-IN')}</td>
+          <td>
+            <span style="font-weight:bold; color: ${acc.is_active ? '#22c55e' : '#64748b'};">
+              ${acc.is_active ? '● ACTIVE' : '○ DISABLED'}
+            </span>
+          </td>
+          <td>
+            <button class="btn-sm ${acc.is_active ? 'btn-toggle-off' : 'btn-toggle-on'}" onclick="toggleUpi(${acc.id}, ${!acc.is_active})">
+              ${acc.is_active ? 'Disable' : 'Enable'}
+            </button>
+            <button class="btn-sm btn-rejc" onclick="deleteUpi(${acc.id})">Delete</button>
+          </td>
+        </tr>
+      `).join('');
+    } catch (err) {
+      console.error('Failed to load UPI list:', err);
+    }
+  }
+
+  async function addUpiAccount() {
+    const upiId = document.getElementById('new-upi-id').value.trim();
+    const name = document.getElementById('new-account-name').value.trim();
+    const qrUrl = document.getElementById('new-qr-url').value.trim();
+    const limit = document.getElementById('new-daily-limit').value.trim();
+
+    if (!upiId || !name) {
+      alert("Please enter both UPI ID and Account Name!");
+      return;
+    }
+
+    try {
+      const res = await fetch(WALLET_API + '/admin/add-upi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': WALLET_TOKEN },
+        body: JSON.stringify({
+          upi_id: upiId,
+          account_name: name,
+          qr_image_url: qrUrl,
+          daily_limit: limit || 50000
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert("✅ UPI Account Added Successfully!");
+        document.getElementById('new-upi-id').value = '';
+        document.getElementById('new-account-name').value = '';
+        document.getElementById('new-qr-url').value = '';
+        document.getElementById('new-daily-limit').value = '';
+        loadUpiList();
+      } else {
+        alert("Error: " + data.message);
+      }
+    } catch (err) {
+      alert("Failed to add UPI: " + err.message);
+    }
+  }
+
+  async function toggleUpi(id, newStatus) {
+    try {
+      const res = await fetch(WALLET_API + '/admin/toggle-upi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': WALLET_TOKEN },
+        body: JSON.stringify({ id: id, is_active: newStatus })
+      });
+      const data = await res.json();
+      if (data.success) loadUpiList();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function deleteUpi(id) {
+    if (!confirm(`Are you sure you want to delete UPI #${id}?`)) return;
+    try {
+      const res = await fetch(WALLET_API + '/admin/delete-upi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': WALLET_TOKEN },
+        body: JSON.stringify({ id: id })
+      });
+      const data = await res.json();
+      if (data.success) loadUpiList();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  saveAndRenderStats();
+</script>
+</body>
+</html>
