@@ -21,7 +21,7 @@ function withLock(key, callback) {
 function adminOnly(req, res, next) {
     const expected = (process.env.WALLET_ADMIN_TOKEN || '').trim().replace(/^["']|["']$/g, '');
     if (!expected) {
-        return next(); // Agar token set nahi hai toh allow karein taaki admin dashboard load ho sake
+        return next();
     }
 
     const rawProvided = req.get('x-admin-token') || req.get('authorization') || '';
@@ -255,8 +255,8 @@ router.get('/balance/:userId', async (req, res) => {
 
         const user = await fetchUser(userId);
         if (!user) {
-            return res.json({ 
-                success: true, 
+            return res.json({
+                success: true,
                 balance: 0.00,
                 locked_balance: 0.00,
                 turnover_required: 0.00,
@@ -264,8 +264,8 @@ router.get('/balance/:userId', async (req, res) => {
             });
         }
 
-        return res.json({ 
-            success: true, 
+        return res.json({
+            success: true,
             balance: Number(user.wallet_balance || 0),
             locked_balance: Number(user.locked_balance || 0),
             turnover_required: Number(user.turnover_required || 0),
@@ -422,10 +422,10 @@ router.post('/webhook/sms-verify', async (req, res) => {
 
     const parsed = parseBankSMS(rawMessage);
     if (!parsed || !parsed.utr || !parsed.amount) {
-        return res.status(400).json({ 
-            success: false, 
+        return res.status(400).json({
+            success: false,
             message: 'Could not extract valid 12-digit UTR or Amount from SMS',
-            parsed 
+            parsed
         });
     }
 
@@ -447,9 +447,9 @@ router.post('/webhook/sms-verify', async (req, res) => {
             }
 
             if (Number(transaction.amount) !== Number(amount)) {
-                return { 
-                    status: 'AMOUNT_MISMATCH', 
-                    message: `Submitted ₹${transaction.amount} but bank received ₹${amount}` 
+                return {
+                    status: 'AMOUNT_MISMATCH',
+                    message: `Submitted ₹${transaction.amount} but bank received ₹${amount}`
                 };
             }
 
@@ -473,9 +473,9 @@ router.post('/webhook/sms-verify', async (req, res) => {
             return res.status(400).json({ success: false, message: result.message });
         }
 
-        return res.json({ 
-            success: true, 
-            message: `Deposit #${result.transactionId} auto-approved for ₹${result.credited}!` 
+        return res.json({
+            success: true,
+            message: `Deposit #${result.transactionId} auto-approved for ₹${result.credited}!`
         });
     } catch (err) {
         console.error('❌ Auto SMS Verification Error:', err);
@@ -529,18 +529,80 @@ router.get('/admin/all-transactions', async (req, res) => {
     return res.json({ success: true, transactions: typeof db.getAllTransactionsList === 'function' ? db.getAllTransactionsList() : [] });
 });
 
+// ✅ FIXED: Direct Supabase Wallet Balance Adjustment
 router.post('/admin/adjust-balance', async (req, res) => {
-    const { userId, amount } = req.body || {};
-    if (!userId || isNaN(amount)) return res.status(400).json({ success: false, message: 'userId and numeric amount required' });
-    const newBal = typeof db.updateBalance === 'function' ? db.updateBalance(userId, Number(amount)) : 0;
-    return res.json({ success: true, message: `Balance updated for ${userId}`, balance: newBal });
+    try {
+        const rawUserId = req.body?.userId ?? req.body?.user_id;
+        const delta = Number(req.body?.amount);
+
+        if (!rawUserId || !Number.isFinite(delta) || delta === 0) {
+            return res.status(400).json({ success: false, message: 'Valid userId and non-zero numeric amount required' });
+        }
+
+        let targetUserId = typeof rawUserId === 'string' ? rawUserId.trim() : '';
+        if (!UUID_REGEX.test(targetUserId)) {
+            const digits = targetUserId.replace(/\D/g, '');
+            if (digits.length >= 10) {
+                const phone = digits.slice(-10);
+                const { data } = await supabase.from('users').select('id').eq('phone', phone).maybeSingle();
+                targetUserId = data?.id || '';
+            } else {
+                targetUserId = '';
+            }
+        }
+
+        if (!targetUserId) {
+            return res.status(404).json({ success: false, message: 'User not found in database' });
+        }
+
+        const result = await withLock(`user:${targetUserId}`, async () => {
+            const { data: user, error: fetchError } = await supabase
+                .from('users')
+                .select('id, wallet_balance')
+                .eq('id', targetUserId)
+                .maybeSingle();
+
+            if (fetchError) throw fetchError;
+            if (!user) return { notFound: true };
+
+            const currentBal = Number(user.wallet_balance || 0);
+            const newBal = Math.max(0, currentBal + delta);
+
+            const { data: updated, error: updateError } = await supabase
+                .from('users')
+                .update({ wallet_balance: newBal })
+                .eq('id', targetUserId)
+                .select('id, wallet_balance')
+                .single();
+
+            if (updateError) throw updateError;
+            return { balance: Number(updated.wallet_balance || 0) };
+        });
+
+        if (result.notFound) {
+            return res.status(404).json({ success: false, message: 'User not found in Supabase database' });
+        }
+
+        return res.json({
+            success: true,
+            message: `Balance updated for ${targetUserId}`,
+            balance: result.balance
+        });
+    } catch (error) {
+        return respondWithDatabaseError(res, error);
+    }
 });
 
+// ✅ FIXED: Safe Ban Toggle (No crash)
 router.post('/admin/toggle-ban', async (req, res) => {
-    const { userId } = req.body || {};
-    if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
-    const user = typeof db.toggleUserBan === 'function' ? db.toggleUserBan(userId) : null;
-    return res.json({ success: true, user });
+    try {
+        const { userId } = req.body || {};
+        if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
+        const user = typeof db.toggleUserBan === 'function' ? db.toggleUserBan(userId) : null;
+        return res.json({ success: true, user });
+    } catch (error) {
+        return respondWithDatabaseError(res, error);
+    }
 });
 
 async function findPendingTransaction(transactionId) {
