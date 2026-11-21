@@ -8,6 +8,7 @@ const authRouter = require('./auth');
 const supabase = require('./supabase');
 
 const app = express();
+app.set('trust proxy', 1); // Render proxy support
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
@@ -34,8 +35,18 @@ app.get('/', (req, res) => {
 const server = http.createServer(app);
 const io = require('socket.io')(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
-    transports: ['websocket', 'polling']
+    transports: ['websocket', 'polling'],
+    allowUpgrades: true,
+    pingInterval: 25000,
+    pingTimeout: 60000
 });
+
+// Helper: Emit only when at least 1 client is connected
+function emitAll(event, payload) {
+    if (io.engine.clientsCount > 0) {
+        io.emit(event, payload);
+    }
+}
 
 // ==========================================
 // 💳 CENTRAL SUPABASE WALLET ENGINE
@@ -101,35 +112,26 @@ async function recordTurnover(userId, amount) {
 }
 
 // ==========================================
-// 1️⃣ GAME: DRAGON VS TIGER ENGINE
+// 1️⃣ GAME: DRAGON VS TIGER STATE & LOGIC
 // ==========================================
 let dvtState = {
     phase: 'BETTING',
     timeLeft: 20,
+    cooldown: 0,
+    roundStarted: false,
+    isSettling: false,
     roundId: Math.floor(100000 + Math.random() * 900000),
     bets: { DRAGON: 0, TIGER: 0, TIE: 0 },
     userBets: [],
     manualWinner: null
 };
 
-async function startDVTGameLoop() {
-    while (true) {
-        dvtState.phase = 'BETTING';
-        dvtState.roundId = Math.floor(100000 + Math.random() * 900000);
-        dvtState.bets = { DRAGON: 0, TIGER: 0, TIE: 0 };
-        dvtState.userBets = [];
+async function settleDVT() {
+    dvtState.isSettling = true;
+    dvtState.phase = 'CALCULATING';
+    emitAll('timer_tick', { state: 'CALCULATING', timeLeft: 0, bets: dvtState.bets });
 
-        io.emit('round_start', { roundId: dvtState.roundId, manualWinner: dvtState.manualWinner });
-
-        for (let i = 20; i > 0; i--) {
-            dvtState.timeLeft = i;
-            io.emit('timer_tick', { state: 'BETTING', timeLeft: i, bets: dvtState.bets });
-            await new Promise(r => setTimeout(r, 1000));
-        }
-
-        dvtState.phase = 'CALCULATING';
-        io.emit('timer_tick', { state: 'CALCULATING', timeLeft: 0, bets: dvtState.bets });
-
+    try {
         let winner = dvtState.manualWinner;
         if (!winner || winner === 'AUTO') {
             const dPayout = (dvtState.bets.DRAGON || 0) * 2;
@@ -145,8 +147,8 @@ async function startDVTGameLoop() {
             }
         }
 
-        let dCard = winner === 'DRAGON' ? 13 : (winner === 'TIGER' ? 5 : 9);
-        let tCard = winner === 'DRAGON' ? 7 : (winner === 'TIGER' ? 12 : 9);
+        const dCard = winner === 'DRAGON' ? 13 : (winner === 'TIGER' ? 5 : 9);
+        const tCard = winner === 'DRAGON' ? 7 : (winner === 'TIGER' ? 12 : 9);
 
         const mult = winner === 'TIE' ? 9 : 2;
         for (const b of dvtState.userBets) {
@@ -157,17 +159,60 @@ async function startDVTGameLoop() {
             }
         }
 
-        io.emit('round_result', { roundId: dvtState.roundId, winner, dCard, tCard });
-        await new Promise(r => setTimeout(r, 5000));
+        emitAll('round_result', { roundId: dvtState.roundId, winner, dCard, tCard });
+    } catch (err) {
+        console.error('DVT settle error:', err.message);
+    } finally {
+        dvtState.phase = 'RESULT';
+        dvtState.cooldown = 5;
+        dvtState.isSettling = false;
+    }
+}
+
+function tickDVT() {
+    if (dvtState.isSettling) return;
+
+    if (dvtState.phase === 'RESULT') {
+        dvtState.cooldown -= 1;
+        if (dvtState.cooldown > 0) return;
+
+        dvtState.phase = 'BETTING';
+        dvtState.timeLeft = 20;
+        dvtState.roundId = Math.floor(100000 + Math.random() * 900000);
+        dvtState.bets = { DRAGON: 0, TIGER: 0, TIE: 0 };
+        dvtState.userBets = [];
+        dvtState.roundStarted = true;
+
+        emitAll('round_start', { roundId: dvtState.roundId, manualWinner: dvtState.manualWinner });
+        emitAll('timer_tick', { state: 'BETTING', timeLeft: dvtState.timeLeft, bets: dvtState.bets });
+        return;
+    }
+
+    if (!dvtState.roundStarted) {
+        dvtState.roundStarted = true;
+        emitAll('round_start', { roundId: dvtState.roundId, manualWinner: dvtState.manualWinner });
+        emitAll('timer_tick', { state: 'BETTING', timeLeft: dvtState.timeLeft, bets: dvtState.bets });
+        return;
+    }
+
+    dvtState.timeLeft -= 1;
+    if (dvtState.timeLeft > 0) {
+        emitAll('timer_tick', { state: 'BETTING', timeLeft: dvtState.timeLeft, bets: dvtState.bets });
+    } else {
+        settleDVT();
     }
 }
 
 // ==========================================
-// 2️⃣ GAME: COLOR PREDICTION ENGINE
+// 2️⃣ GAME: COLOR PREDICTION STATE & LOGIC
 // ==========================================
 let colorState = {
+    phase: 'BETTING',
     roundId: Math.floor(100000 + Math.random() * 900000),
     timeLeft: 30,
+    cooldown: 0,
+    roundStarted: false,
+    isSettling: false,
     bets: {
         RED: { total: 0 },
         GREEN: { total: 0 },
@@ -177,26 +222,11 @@ let colorState = {
     currentMode: 'AUTO' // 'AUTO' | 'RED' | 'GREEN' | 'VIOLET'
 };
 
-async function startColorGameLoop() {
-    while (true) {
-        colorState.roundId = Math.floor(100000 + Math.random() * 900000);
-        colorState.bets = { RED: { total: 0 }, GREEN: { total: 0 }, VIOLET: { total: 0 } };
-        colorState.userBets = [];
+async function settleColor() {
+    colorState.isSettling = true;
+    colorState.phase = 'CALCULATING';
 
-        for (let i = 30; i > 0; i--) {
-            colorState.timeLeft = i;
-            io.emit('admin_color_update', {
-                roundId: colorState.roundId,
-                timeLeft: i,
-                liveUsers: io.engine.clientsCount,
-                bets: colorState.bets,
-                currentMode: colorState.currentMode
-            });
-            io.emit('color_timer_tick', { timeLeft: i, roundId: colorState.roundId });
-            await new Promise(r => setTimeout(r, 1000));
-        }
-
-        // Auto-Profit: find lowest payout
+    try {
         let winColor = colorState.currentMode;
         if (!winColor || winColor === 'AUTO') {
             const redPayout = (colorState.bets.RED.total || 0) * 2;
@@ -212,7 +242,6 @@ async function startColorGameLoop() {
             }
         }
 
-        // Credit Winners to Wallet
         const mult = winColor === 'VIOLET' ? 4.5 : 2;
         for (const b of colorState.userBets) {
             if (b.color === winColor) {
@@ -222,17 +251,54 @@ async function startColorGameLoop() {
             }
         }
 
-        io.emit('color_round_result', {
+        emitAll('color_round_result', {
             roundId: colorState.roundId,
             winningColor: winColor
         });
-
-        await new Promise(r => setTimeout(r, 5000));
+    } catch (err) {
+        console.error('Color settle error:', err.message);
+    } finally {
+        colorState.phase = 'RESULT';
+        colorState.cooldown = 5;
+        colorState.isSettling = false;
     }
 }
 
+function tickColor() {
+    if (colorState.isSettling) return;
+
+    if (colorState.phase === 'RESULT') {
+        colorState.cooldown -= 1;
+        if (colorState.cooldown > 0) return;
+
+        colorState.phase = 'BETTING';
+        colorState.timeLeft = 30;
+        colorState.roundId = Math.floor(100000 + Math.random() * 900000);
+        colorState.bets = { RED: { total: 0 }, GREEN: { total: 0 }, VIOLET: { total: 0 } };
+        colorState.userBets = [];
+        colorState.roundStarted = true;
+    } else if (!colorState.roundStarted) {
+        colorState.roundStarted = true;
+    } else {
+        colorState.timeLeft -= 1;
+        if (colorState.timeLeft <= 0) {
+            settleColor();
+            return;
+        }
+    }
+
+    emitAll('admin_color_update', {
+        roundId: colorState.roundId,
+        timeLeft: colorState.timeLeft,
+        liveUsers: io.engine.clientsCount,
+        bets: colorState.bets,
+        currentMode: colorState.currentMode
+    });
+    emitAll('color_timer_tick', { timeLeft: colorState.timeLeft, roundId: colorState.roundId });
+}
+
 // ==========================================
-// 3️⃣ GAME: ZOO ROULETTE ENGINE
+// 3️⃣ GAME: ZOO ROULETTE STATE & LOGIC
 // ==========================================
 const ANIMALS = [
     { id: 'swallow', multiplier: 6 },
@@ -248,8 +314,12 @@ const ANIMALS = [
 ];
 
 let zooState = {
+    phase: 'BETTING',
     roundId: Math.floor(1000 + Math.random() * 9000),
     timeLeft: 15,
+    cooldown: 0,
+    roundStarted: false,
+    isSettling: false,
     bets: {},
     userBets: [],
     manualWinner: 'AUTO'
@@ -262,26 +332,11 @@ function resetZoo() {
 }
 resetZoo();
 
-async function startZooGameLoop() {
-    while (true) {
-        zooState.roundId = Math.floor(1000 + Math.random() * 9000);
-        resetZoo();
+async function settleZoo() {
+    zooState.isSettling = true;
+    zooState.phase = 'CALCULATING';
 
-        io.emit('zoo_round_reset', { roundId: zooState.roundId, currentMode: zooState.manualWinner });
-
-        for (let i = 15; i > 0; i--) {
-            zooState.timeLeft = i;
-            io.emit('zoo_timer_update', {
-                timeLeft: i,
-                state: 'BETTING',
-                roundId: zooState.roundId,
-                bets: zooState.bets,
-                currentMode: zooState.manualWinner,
-                livePlayers: io.engine.clientsCount
-            });
-            await new Promise(r => setTimeout(r, 1000));
-        }
-
+    try {
         let winAnimal = zooState.manualWinner;
         if (!winAnimal || winAnimal === 'AUTO') {
             let lowestPayout = Infinity;
@@ -304,39 +359,70 @@ async function startZooGameLoop() {
             }
         }
 
-        io.emit('zoo_round_result', { winningAnimal: winAnimal, roundId: zooState.roundId });
-        await new Promise(r => setTimeout(r, 6000));
+        emitAll('zoo_round_result', { winningAnimal: winAnimal, roundId: zooState.roundId });
+    } catch (err) {
+        console.error('Zoo settle error:', err.message);
+    } finally {
+        zooState.phase = 'RESULT';
+        zooState.cooldown = 6;
+        zooState.isSettling = false;
     }
 }
 
+function tickZoo() {
+    if (zooState.isSettling) return;
+
+    if (zooState.phase === 'RESULT') {
+        zooState.cooldown -= 1;
+        if (zooState.cooldown > 0) return;
+
+        zooState.phase = 'BETTING';
+        zooState.timeLeft = 15;
+        zooState.roundId = Math.floor(1000 + Math.random() * 9000);
+        resetZoo();
+        zooState.roundStarted = true;
+        emitAll('zoo_round_reset', { roundId: zooState.roundId, currentMode: zooState.manualWinner });
+    } else if (!zooState.roundStarted) {
+        zooState.roundStarted = true;
+        emitAll('zoo_round_reset', { roundId: zooState.roundId, currentMode: zooState.manualWinner });
+    } else {
+        zooState.timeLeft -= 1;
+        if (zooState.timeLeft <= 0) {
+            settleZoo();
+            return;
+        }
+    }
+
+    emitAll('zoo_timer_update', {
+        timeLeft: zooState.timeLeft,
+        state: 'BETTING',
+        roundId: zooState.roundId,
+        bets: zooState.bets,
+        currentMode: zooState.manualWinner,
+        livePlayers: io.engine.clientsCount
+    });
+}
+
 // ==========================================
-// 4️⃣ GAME: 7 UP DOWN ENGINE
+// 4️⃣ GAME: 7 UP DOWN STATE & LOGIC
 // ==========================================
 let sevenState = {
+    phase: 'BETTING',
     roundId: Math.floor(10000 + Math.random() * 90000),
     timeLeft: 15,
+    cooldown: 0,
+    roundStarted: false,
+    isSettling: false,
     bets: { DOWN: 0, SEVEN: 0, UP: 0 },
     userBets: [],
     manualWinner: 'AUTO' // 'AUTO' | 'DOWN' | 'SEVEN' | 'UP'
 };
 
-async function startSevenGameLoop() {
-    while (true) {
-        sevenState.roundId = Math.floor(10000 + Math.random() * 90000);
-        sevenState.bets = { DOWN: 0, SEVEN: 0, UP: 0 };
-        sevenState.userBets = [];
+async function settleSeven() {
+    sevenState.isSettling = true;
+    sevenState.phase = 'CALCULATING';
 
-        for (let i = 15; i > 0; i--) {
-            sevenState.timeLeft = i;
-            io.emit('seven_timer_update', {
-                timeLeft: i,
-                roundId: sevenState.roundId,
-                bets: sevenState.bets,
-                currentMode: sevenState.manualWinner
-            });
-            await new Promise(r => setTimeout(r, 1000));
-        }
-
+    try {
         let winner = sevenState.manualWinner;
         if (!winner || winner === 'AUTO') {
             const downPay = (sevenState.bets.DOWN || 0) * 2;
@@ -361,9 +447,57 @@ async function startSevenGameLoop() {
             }
         }
 
-        io.emit('seven_round_result', { roundId: sevenState.roundId, winner });
-        await new Promise(r => setTimeout(r, 5000));
+        emitAll('seven_round_result', { roundId: sevenState.roundId, winner });
+    } catch (err) {
+        console.error('7 Up Down settle error:', err.message);
+    } finally {
+        sevenState.phase = 'RESULT';
+        sevenState.cooldown = 5;
+        sevenState.isSettling = false;
     }
+}
+
+function tickSeven() {
+    if (sevenState.isSettling) return;
+
+    if (sevenState.phase === 'RESULT') {
+        sevenState.cooldown -= 1;
+        if (sevenState.cooldown > 0) return;
+
+        sevenState.phase = 'BETTING';
+        sevenState.timeLeft = 15;
+        sevenState.roundId = Math.floor(10000 + Math.random() * 90000);
+        sevenState.bets = { DOWN: 0, SEVEN: 0, UP: 0 };
+        sevenState.userBets = [];
+        sevenState.roundStarted = true;
+    } else if (!sevenState.roundStarted) {
+        sevenState.roundStarted = true;
+    } else {
+        sevenState.timeLeft -= 1;
+        if (sevenState.timeLeft <= 0) {
+            settleSeven();
+            return;
+        }
+    }
+
+    emitAll('seven_timer_update', {
+        timeLeft: sevenState.timeLeft,
+        roundId: sevenState.roundId,
+        bets: sevenState.bets,
+        currentMode: sevenState.manualWinner
+    });
+}
+
+// ==========================================
+// ⏱️ UNIFIED MASTER GAME LOOP (1 TICK / SEC)
+// ==========================================
+function startMasterGameLoop() {
+    setInterval(() => {
+        tickDVT();
+        tickColor();
+        tickZoo();
+        tickSeven();
+    }, 1000);
 }
 
 // ==========================================
@@ -373,8 +507,31 @@ io.on('connection', (socket) => {
 
     // ADMIN JOIN
     socket.on('join_admin', (secret) => {
-        socket.emit('admin_status_update', { manualWinner: dvtState.manualWinner, bets: dvtState.bets });
-        socket.emit('admin_color_update', { roundId: colorState.roundId, timeLeft: colorState.timeLeft, bets: colorState.bets, currentMode: colorState.currentMode });
+        socket.emit('admin_status_update', {
+            manualWinner: dvtState.manualWinner,
+            bets: dvtState.bets
+        });
+        socket.emit('admin_color_update', {
+            roundId: colorState.roundId,
+            timeLeft: colorState.timeLeft,
+            liveUsers: io.engine.clientsCount,
+            bets: colorState.bets,
+            currentMode: colorState.currentMode
+        });
+        socket.emit('zoo_timer_update', {
+            timeLeft: zooState.timeLeft,
+            state: zooState.phase,
+            roundId: zooState.roundId,
+            bets: zooState.bets,
+            currentMode: zooState.manualWinner,
+            livePlayers: io.engine.clientsCount
+        });
+        socket.emit('seven_timer_update', {
+            timeLeft: sevenState.timeLeft,
+            roundId: sevenState.roundId,
+            bets: sevenState.bets,
+            currentMode: sevenState.manualWinner
+        });
     });
 
     // 🐉 1. DRAGON TIGER BET
@@ -392,19 +549,21 @@ io.on('connection', (socket) => {
 
         dvtState.bets[bet_on] = (dvtState.bets[bet_on] || 0) + betAmt;
         dvtState.userBets.push({ socketId: socket.id, userId, bet_on, amount: betAmt });
-        io.emit('bets_updated', dvtState.bets);
+        emitAll('bets_updated', dvtState.bets);
     });
 
     socket.on('admin_set_winner', (data) => {
         dvtState.manualWinner = data.winner === 'AUTO' ? null : data.winner;
-        io.emit('admin_status_update', { manualWinner: dvtState.manualWinner, bets: dvtState.bets });
+        emitAll('admin_status_update', { manualWinner: dvtState.manualWinner, bets: dvtState.bets });
     });
 
     // 🎨 2. COLOR PREDICTION BET
     socket.on('color_place_bet', async (data) => {
         const { color, amount, userId } = data; // RED | GREEN | VIOLET
         const betAmt = Number(amount) || 0;
-        if (colorState.timeLeft <= 5) return socket.emit('bet_error', { message: 'Betting closed for this round' });
+        if (colorState.phase !== 'BETTING' || colorState.timeLeft <= 5) {
+            return socket.emit('bet_error', { message: 'Betting closed for this round' });
+        }
 
         if (userId) {
             const res = await deductWalletBalance(userId, betAmt);
@@ -415,19 +574,33 @@ io.on('connection', (socket) => {
 
         if (colorState.bets[color]) colorState.bets[color].total += betAmt;
         colorState.userBets.push({ socketId: socket.id, userId, color, amount: betAmt });
-        io.emit('admin_color_update', { roundId: colorState.roundId, timeLeft: colorState.timeLeft, bets: colorState.bets, currentMode: colorState.currentMode });
+        emitAll('admin_color_update', {
+            roundId: colorState.roundId,
+            timeLeft: colorState.timeLeft,
+            liveUsers: io.engine.clientsCount,
+            bets: colorState.bets,
+            currentMode: colorState.currentMode
+        });
     });
 
     socket.on('admin_set_color_mode', (data) => {
         colorState.currentMode = data.mode;
-        io.emit('admin_color_update', { roundId: colorState.roundId, timeLeft: colorState.timeLeft, bets: colorState.bets, currentMode: colorState.currentMode });
+        emitAll('admin_color_update', {
+            roundId: colorState.roundId,
+            timeLeft: colorState.timeLeft,
+            liveUsers: io.engine.clientsCount,
+            bets: colorState.bets,
+            currentMode: colorState.currentMode
+        });
     });
 
     // 🦁 3. ZOO ROULETTE BET
     socket.on('zoo_place_bet', async (data) => {
         const { animalId, amount, userId } = data;
         const betAmt = Number(amount) || 0;
-        if (zooState.timeLeft <= 3) return socket.emit('bet_error', { message: 'Betting closed' });
+        if (zooState.phase !== 'BETTING' || zooState.timeLeft <= 3) {
+            return socket.emit('bet_error', { message: 'Betting closed' });
+        }
 
         if (userId) {
             const res = await deductWalletBalance(userId, betAmt);
@@ -445,14 +618,16 @@ io.on('connection', (socket) => {
 
     socket.on('admin_set_zoo_winner', (data) => {
         zooState.manualWinner = data.animal;
-        io.emit('zoo_mode_update', { currentMode: zooState.manualWinner });
+        emitAll('zoo_mode_update', { currentMode: zooState.manualWinner });
     });
 
     // 🎲 4. 7 UP DOWN BET
     socket.on('seven_place_bet', async (data) => {
         const { choice, amount, userId } = data; // DOWN | SEVEN | UP
         const betAmt = Number(amount) || 0;
-        if (sevenState.timeLeft <= 3) return socket.emit('bet_error', { message: 'Betting closed' });
+        if (sevenState.phase !== 'BETTING' || sevenState.timeLeft <= 3) {
+            return socket.emit('bet_error', { message: 'Betting closed' });
+        }
 
         if (userId) {
             const res = await deductWalletBalance(userId, betAmt);
@@ -467,6 +642,12 @@ io.on('connection', (socket) => {
 
     socket.on('admin_set_seven_winner', (data) => {
         sevenState.manualWinner = data.choice;
+        emitAll('seven_timer_update', {
+            timeLeft: sevenState.timeLeft,
+            roundId: sevenState.roundId,
+            bets: sevenState.bets,
+            currentMode: sevenState.manualWinner
+        });
     });
 });
 
@@ -474,8 +655,5 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
     console.log(`🚀 AlfaOne Multi-Game Real Money Server Live on port ${PORT}`);
     console.log(`👑 Admin Dashboard: http://localhost:${PORT}/admin`);
-    startDVTGameLoop();
-    startColorGameLoop();
-    startZooGameLoop();
-    startSevenGameLoop();
+    startMasterGameLoop();
 });
