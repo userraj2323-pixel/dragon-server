@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AlfaOne - Master Admin & Live Bets Control</title>
+  <link rel="icon" href="data:,">
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <style>
     * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; }
@@ -12,7 +13,11 @@
 
     /* Header & Profit Summary */
     .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid #1e293b; gap: 10px; flex-wrap: wrap; }
+    .header-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .header h1 { font-size: 20px; font-weight: 800; color: #f8fafc; }
+    .conn-pill { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+    .conn-pill.online { background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: #10b981; }
+    .conn-pill.offline { background: rgba(239, 68, 68, 0.15); color: #f87171; border-color: #ef4444; }
     .header-actions { display: flex; gap: 8px; }
     .btn-action-sm { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; transition: 0.2s; }
     .btn-action-sm:hover { background: #334155; color: #ffffff; }
@@ -108,15 +113,20 @@
     .bet-box h5 { margin: 0 0 6px; font-size: 12px; }
     .bet-box p { margin: 0; font-size: 17px; font-weight: 800; color: #f8fafc; }
 
-    /* Tables & Inputs */
+    /* Tables, Badges & Inputs */
     table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; margin-top: 10px; }
     th { background: #1e293b; color: #94a3b8; padding: 10px; }
     td { padding: 10px; border-bottom: 1px solid #1e293b; }
-    .btn-sm { padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: bold; border: none; cursor: pointer; color: white; }
-    .btn-appr { background: #10b981; margin-right: 4px; }
+    .btn-sm { padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: bold; border: none; cursor: pointer; color: white; margin-right: 4px; margin-bottom: 4px; }
+    .btn-appr { background: #10b981; }
     .btn-rejc { background: #ef4444; }
+    .btn-custom { background: #3b82f6; }
     .btn-toggle-on { background: #10b981; }
     .btn-toggle-off { background: #64748b; }
+
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+    .badge-on { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid #10b981; }
+    .badge-off { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid #ef4444; }
 
     .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 15px; }
     .input-field { background: #090d16; border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; color: #fff; font-size: 13px; width: 100%; }
@@ -132,7 +142,10 @@
 <div class="main-wrapper">
 
   <div class="header">
-    <h1>👑 AlfaOne Master Admin</h1>
+    <div class="header-left">
+      <h1>👑 AlfaOne Master Admin</h1>
+      <span id="socket-status-pill" class="conn-pill">⚪ Connecting...</span>
+    </div>
     <div class="header-actions">
       <button class="btn-action-sm btn-add-missed" onclick="quickAdd12500()">➕ Add ₹12,500 Missing Profit</button>
       <button class="btn-action-sm" onclick="resetProfitStats()">🔄 Reset Profit</button>
@@ -263,18 +276,30 @@
     </div>
   </div>
 
-  <!-- TAB 4: 7 UP DOWN -->
+  <!-- TAB 4: 7 UP DOWN (LIVE CONNECTED) -->
   <div id="tab-seven" class="tab-content">
     <div class="admin-card">
       <div class="title-header">🎲 7 UP DOWN MASTER CONTROL</div>
       <div class="status-display">
-        <div class="status-label">LIVE SERVER LINK</div>
-        <div class="status-value" style="color:#38bdf8;">Render Cloud Live</div>
+        <div class="status-label">NEXT WINNER WILL BE:</div>
+        <div class="status-value" id="seven-mode-text">Auto-Profit [ACTIVE]</div>
       </div>
-      <div style="text-align: center;">
-        <a href="https://seven-up-down-server.onrender.com/admin" target="_blank" style="display:inline-block; padding:12px 24px; background:linear-gradient(90deg, #10b981, #059669); color:white; text-decoration:none; border-radius:8px; font-weight:bold;">
-          🔗 Open 7 Up Down Live Control Panel
-        </a>
+      <div class="stat-row">
+        <span>Round: <b id="seven-round">--</b></span>
+        <span>Timer: <b id="seven-timer">--s</b></span>
+      </div>
+
+      <div class="bets-preview">
+        <div class="bet-box b-red"><h5 style="color:#ef4444;">2-6 DOWN (2x)</h5><p>₹<span id="bet-seven-down">0</span></p></div>
+        <div class="bet-box b-violet"><h5 style="color:#a855f7;">EXACT 7 (5x)</h5><p>₹<span id="bet-seven-seven">0</span></p></div>
+        <div class="bet-box b-green"><h5 style="color:#22c55e;">8-12 UP (2x)</h5><p>₹<span id="bet-seven-up">0</span></p></div>
+      </div>
+
+      <div class="btn-stack">
+        <button class="btn-action btn-red" onclick="setSevenMode('DOWN')">⬇️ Force 2-6 Down</button>
+        <button class="btn-action btn-violet" onclick="setSevenMode('SEVEN')">7️⃣ Force Exact 7</button>
+        <button class="btn-action btn-green" onclick="setSevenMode('UP')">⬆️ Force 8-12 Up</button>
+        <button class="btn-action btn-auto" onclick="setSevenMode('AUTO')">🛡️ Auto-Profit Mode (Lowest Payout Wins)</button>
       </div>
     </div>
   </div>
@@ -317,9 +342,9 @@
         <div style="font-size: 13px; font-weight: bold; margin-bottom: 8px; color: #22c55e;">
           Step 2: Bank SMS Receive Karein (Simulate)
         </div>
-        <input type="text" id="sim-sms-text" class="input-field" style="margin-bottom: 10px;" 
+        <input type="text" id="sim-sms-text" class="input-field" style="margin-bottom: 10px;"
                value="Dear Customer, A/c credited by Rs 500.00 via UPI Ref no 712345678901 on 01-Nov.">
-        
+
         <button class="btn-action btn-green" style="width: 100%; margin-bottom: 16px;" onclick="simulateBankSMS()">
           ⚡ 2. Send SMS to Webhook (Auto-Approve Now)
         </button>
@@ -470,6 +495,20 @@
   const WALLET_API = '/api/wallet';
   const WALLET_TOKEN = 'admin1234';
 
+  // Safe fetch helper to avoid JSON parse crashes on HTTP/429 errors
+  async function safeFetchJson(url, options = {}) {
+    const res = await fetch(url, options);
+    const text = await res.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch (_) {}
+    if (!res.ok) {
+      const msg = (data && data.message) ? data.message : `Server error (${res.status})`;
+      throw new Error(msg);
+    }
+    if (!data) throw new Error('Invalid JSON response from server');
+    return data;
+  }
+
   // Helper function to format User Display
   function formatUserBadge(t) {
     if (t.user_display) {
@@ -576,16 +615,20 @@
 
   let allRegisteredUsers = [];
   let allLedgerTransactions = [];
+  let isAdjustingBalance = false;
 
   async function loadRegisteredUsers() {
     try {
-      const res = await fetch('/api/wallet/admin/users');
-      const data = await res.json();
+      const data = await safeFetchJson('/api/wallet/admin/users', {
+        headers: { 'x-admin-token': WALLET_TOKEN }
+      });
       if (data.success && data.users) {
         allRegisteredUsers = data.users;
-        renderUsersTable(allRegisteredUsers);
+        filterUsersTable();
       }
-    } catch (err) { console.error("Users load error", err); }
+    } catch (err) {
+      console.error("Users load error:", err.message);
+    }
   }
 
   function renderUsersTable(usersList) {
@@ -594,25 +637,31 @@
       tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#64748b;">No registered users found.</td></tr>';
       return;
     }
-    tbody.innerHTML = usersList.map(u => `
-      <tr>
-        <td><code>${(u.id || u.uid || '').substring(0, 8)}...</code></td>
-        <td><b>${u.name || u.displayName || 'Player'}</b></td>
-        <td>${u.phone || u.mobile || 'N/A'}</td>
-        <td>${u.email || 'N/A'}</td>
-        <td style="font-weight:bold; color:#facc15;">₹${Number(u.balance || u.wallet_balance || 0).toLocaleString('en-IN')}</td>
-        <td><span class="badge ${u.isBanned ? 'badge-off' : 'badge-on'}">${u.isBanned ? 'BANNED' : 'ACTIVE'}</span></td>
-        <td>
-          <button class="btn-sm btn-appr" onclick="adjustBalance('${u.id || u.uid}', 500)">+500</button>
-          <button class="btn-sm btn-rejc" onclick="adjustBalance('${u.id || u.uid}', -500)">-500</button>
-          <button class="btn-sm ${u.isBanned ? 'btn-toggle-on' : 'btn-toggle-off'}" onclick="toggleBan('${u.id || u.uid}')">${u.isBanned ? 'Unban' : 'Ban'}</button>
-        </td>
-      </tr>
-    `).join('');
+    tbody.innerHTML = usersList.map(u => {
+      const uid = u.id || u.uid || '';
+      const bal = Number(u.balance ?? u.wallet_balance ?? 0);
+      return `
+        <tr>
+          <td><code>${uid.substring(0, 8)}...</code></td>
+          <td><b>${u.name || u.displayName || 'Player'}</b></td>
+          <td>${u.phone || u.mobile || 'N/A'}</td>
+          <td>${u.email || 'N/A'}</td>
+          <td style="font-weight:bold; color:#facc15;">₹${bal.toLocaleString('en-IN')}</td>
+          <td><span class="badge ${u.isBanned ? 'badge-off' : 'badge-on'}">${u.isBanned ? 'BANNED' : 'ACTIVE'}</span></td>
+          <td>
+            <button class="btn-sm btn-appr" onclick="adjustBalance('${uid}', 500)">+500</button>
+            <button class="btn-sm btn-rejc" onclick="adjustBalance('${uid}', -500)">-500</button>
+            <button class="btn-sm btn-custom" onclick="customAdjustBalance('${uid}')">± Custom</button>
+            <button class="btn-sm ${u.isBanned ? 'btn-toggle-on' : 'btn-toggle-off'}" onclick="toggleBan('${uid}')">${u.isBanned ? 'Unban' : 'Ban'}</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
   }
 
   function filterUsersTable() {
-    const query = document.getElementById('web-user-search-input').value.toLowerCase().trim();
+    const input = document.getElementById('web-user-search-input');
+    const query = input ? input.value.toLowerCase().trim() : '';
     if (!query) {
       renderUsersTable(allRegisteredUsers);
       return;
@@ -627,34 +676,67 @@
   }
 
   async function adjustBalance(userId, amount) {
-    const res = await fetch('/api/wallet/admin/adjust-balance', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, amount })
-    });
-    const data = await res.json();
-    if (data.success) {
-      alert(`Balance updated for ${userId}`);
-      loadRegisteredUsers();
+    if (isAdjustingBalance) return;
+    isAdjustingBalance = true;
+    try {
+      const data = await safeFetchJson('/api/wallet/admin/adjust-balance', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-token': WALLET_TOKEN
+        },
+        body: JSON.stringify({ userId, amount: Number(amount) })
+      });
+      if (data.success) {
+        const newBalText = data.balance !== undefined ? ` (New Balance: ₹${Number(data.balance).toLocaleString('en-IN')})` : '';
+        alert(`✅ Balance updated by ${amount > 0 ? '+' : ''}₹${amount}${newBalText}`);
+        await loadRegisteredUsers();
+      } else {
+        alert('❌ Failed: ' + (data.message || 'Unknown error'));
+      }
+    } catch (err) {
+      alert('❌ Balance update error: ' + err.message);
+    } finally {
+      isAdjustingBalance = false;
     }
   }
 
+  function customAdjustBalance(userId) {
+    const input = prompt("Amount likhein (Add karne ke liye jaise 100 ya 1000, minus karne ke liye jaise -200):");
+    if (input === null) return;
+    const amt = Number(input.trim());
+    if (!amt || isNaN(amt)) {
+      alert("❌ Sahi numeric amount likhein!");
+      return;
+    }
+    adjustBalance(userId, amt);
+  }
+
   async function toggleBan(userId) {
-    const res = await fetch('/api/wallet/admin/toggle-ban', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId })
-    });
-    const data = await res.json();
-    if (data.success) {
-      loadRegisteredUsers();
+    try {
+      const data = await safeFetchJson('/api/wallet/admin/toggle-ban', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-token': WALLET_TOKEN
+        },
+        body: JSON.stringify({ userId })
+      });
+      if (data.success) {
+        loadRegisteredUsers();
+      } else {
+        alert('❌ Failed: ' + (data.message || 'Could not update ban status'));
+      }
+    } catch (err) {
+      alert('❌ Error: ' + err.message);
     }
   }
 
   async function loadTransactionHistory() {
     try {
-      const res = await fetch('/api/wallet/admin/all-transactions');
-      const data = await res.json();
+      const data = await safeFetchJson('/api/wallet/admin/all-transactions', {
+        headers: { 'x-admin-token': WALLET_TOKEN }
+      });
       if (data.success && data.transactions) {
         allLedgerTransactions = data.transactions;
         const tbody = document.getElementById('web-history-table-body');
@@ -674,7 +756,9 @@
           </tr>
         `).join('');
       }
-    } catch (err) { console.error("History load error", err); }
+    } catch (err) {
+      console.error("History load error:", err.message);
+    }
   }
 
   function exportTransactionsCSV() {
@@ -696,18 +780,37 @@
     document.body.removeChild(link);
   }
 
-  // SOCKET CONNECTION
-  const socket = io(SERVER_URL);
+  // SOCKET CONNECTION (WebSocket-only to prevent Render 429 polling limits)
+  const statusPill = document.getElementById('socket-status-pill');
+  const socket = io(SERVER_URL, {
+    transports: ['websocket'],
+    reconnection: true,
+    reconnectionDelay: 3000,
+    reconnectionDelayMax: 10000
+  });
+
   socket.on('connect', () => {
+    statusPill.innerText = '🟢 Live Connected';
+    statusPill.className = 'conn-pill online';
     socket.emit('join_admin', ADMIN_SECRET);
+  });
+
+  socket.on('disconnect', () => {
+    statusPill.innerText = '🔴 Disconnected';
+    statusPill.className = 'conn-pill offline';
+  });
+
+  socket.on('connect_error', () => {
+    statusPill.innerText = '🟠 Reconnecting...';
+    statusPill.className = 'conn-pill offline';
   });
 
   // COLOR PREDICTION
   let lastColorBets = { RED: 0, GREEN: 0, VIOLET: 0 };
   socket.on('admin_color_update', (data) => {
     document.getElementById('color-round').innerText = data.roundId || '--';
-    document.getElementById('color-timer').innerText = (data.timeLeft || 0) + "s";
-    document.getElementById('color-users').innerText = data.liveUsers || 0;
+    document.getElementById('color-timer').innerText = (data.timeLeft ?? 0) + "s";
+    document.getElementById('color-users').innerText = data.liveUsers ?? 0;
 
     const rBet = Number(data.bets?.RED?.total || 0);
     const gBet = Number(data.bets?.GREEN?.total || 0);
@@ -719,7 +822,7 @@
     if (data.timeLeft > 0) lastColorBets = { RED: rBet, GREEN: gBet, VIOLET: vBet };
 
     const modeText = document.getElementById('color-mode-text');
-    if (data.currentMode === 'AUTO') {
+    if (!data.currentMode || data.currentMode === 'AUTO') {
       modeText.innerText = "Auto-Profit [ACTIVE]";
       modeText.style.color = "#22c55e";
     } else {
@@ -775,6 +878,7 @@
   socket.on('admin_status_update', (data) => updateDtUI(data.manualWinner, data.bets, data.roundId, data.timeLeft, data.liveUsers));
   socket.on('timer_tick', (data) => updateDtUI(undefined, data.bets, undefined, data.timeLeft, undefined));
   socket.on('round_start', (data) => updateDtUI(data.manualWinner, { DRAGON: 0, TIGER: 0, TIE: 0 }, data.roundId, 20, undefined));
+  socket.on('bets_updated', (bets) => updateDtUI(undefined, bets, undefined, undefined, undefined));
 
   socket.on('round_result', (data) => {
     const totalBet = (lastDtBets.DRAGON || 0) + (lastDtBets.TIGER || 0) + (lastDtBets.TIE || 0);
@@ -830,9 +934,9 @@
   });
 
   socket.on('zoo_timer_update', (data) => {
-    document.getElementById('zoo-timer').innerText = data.timeLeft + "s";
+    document.getElementById('zoo-timer').innerText = (data.timeLeft ?? 0) + "s";
     document.getElementById('zoo-round').innerText = data.roundId || '--';
-    document.getElementById('zoo-users').innerText = data.livePlayers || 0;
+    document.getElementById('zoo-users').innerText = data.livePlayers ?? 0;
     if (data.currentMode) {
       const modeText = document.getElementById('zoo-mode-text');
       modeText.innerText = data.currentMode === 'AUTO' ? 'Auto-Profit [ACTIVE]' : data.currentMode.toUpperCase() + ' [FORCED]';
@@ -872,15 +976,59 @@
     modeText.style.color = animal === 'AUTO' ? '#22c55e' : '#f59e0b';
   }
 
+  // 7 UP DOWN (LIVE)
+  let lastSevenBets = { DOWN: 0, SEVEN: 0, UP: 0 };
+  socket.on('seven_timer_update', (data) => {
+    document.getElementById('seven-round').innerText = data.roundId || '--';
+    document.getElementById('seven-timer').innerText = (data.timeLeft ?? 0) + 's';
+    if (data.bets) {
+      lastSevenBets = {
+        DOWN: Number(data.bets.DOWN || 0),
+        SEVEN: Number(data.bets.SEVEN || 0),
+        UP: Number(data.bets.UP || 0)
+      };
+      document.getElementById('bet-seven-down').innerText = lastSevenBets.DOWN;
+      document.getElementById('bet-seven-seven').innerText = lastSevenBets.SEVEN;
+      document.getElementById('bet-seven-up').innerText = lastSevenBets.UP;
+    }
+    if (data.currentMode) {
+      const modeText = document.getElementById('seven-mode-text');
+      modeText.innerText = data.currentMode === 'AUTO' ? 'Auto-Profit [ACTIVE]' : data.currentMode + ' [FORCED]';
+      modeText.style.color = data.currentMode === 'AUTO' ? '#22c55e' : '#f59e0b';
+    }
+  });
+
+  socket.on('seven_round_result', (data) => {
+    const totalBet = (lastSevenBets.DOWN || 0) + (lastSevenBets.SEVEN || 0) + (lastSevenBets.UP || 0);
+    let payout = 0;
+    if (data.winner === 'DOWN') payout = (lastSevenBets.DOWN || 0) * 2;
+    else if (data.winner === 'UP') payout = (lastSevenBets.UP || 0) * 2;
+    else if (data.winner === 'SEVEN') payout = (lastSevenBets.SEVEN || 0) * 5;
+
+    if (totalBet > 0) {
+      stats.seven.bets += totalBet;
+      stats.seven.payouts += payout;
+      stats.seven.profit += (totalBet - payout);
+      stats.seven.rounds += 1;
+      saveAndRenderStats();
+    }
+  });
+
+  function setSevenMode(choice) {
+    socket.emit('admin_set_seven_winner', { choice });
+    const modeText = document.getElementById('seven-mode-text');
+    modeText.innerText = choice === 'AUTO' ? 'Auto-Profit [ACTIVE]' : choice + ' [FORCED]';
+    modeText.style.color = choice === 'AUTO' ? '#22c55e' : '#f59e0b';
+  }
+
   // WALLET APPROVALS LOGIC
   async function loadMerchantUpi() {
     try {
-      const res = await fetch(WALLET_API + '/config');
-      const data = await res.json();
+      const data = await safeFetchJson(WALLET_API + '/config');
       if (data.success && data.merchantUpiId) {
         document.getElementById('admin-merchant-upi-input').value = data.merchantUpiId;
       }
-    } catch (e) { console.error('Failed to load merchant UPI', e); }
+    } catch (e) { console.error('Failed to load merchant UPI:', e.message); }
   }
 
   async function saveMerchantUpi() {
@@ -890,12 +1038,14 @@
       return;
     }
     try {
-      const res = await fetch(WALLET_API + '/config', {
+      const data = await safeFetchJson(WALLET_API + '/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-token': WALLET_TOKEN
+        },
         body: JSON.stringify({ merchantUpiId: upiId })
       });
-      const data = await res.json();
       if (data.success) {
         alert("✅ Merchant UPI ID Updated Successfully to: " + data.merchantUpiId);
       } else {
@@ -909,8 +1059,9 @@
   async function loadWalletData() {
     loadMerchantUpi();
     try {
-      const res = await fetch(WALLET_API + '/admin/pending', { headers: { 'x-admin-token': WALLET_TOKEN } });
-      const data = await res.json();
+      const data = await safeFetchJson(WALLET_API + '/admin/pending', {
+        headers: { 'x-admin-token': WALLET_TOKEN }
+      });
       if (!data.success) return;
 
       const depBody = document.getElementById('wallet-deposits-body');
@@ -945,19 +1096,22 @@
           </td>
         </tr>
       `).join('');
-    } catch (err) { console.error(err); }
+    } catch (err) { console.error(err.message); }
   }
 
   async function actionTx(id, type) {
     const endpoint = type === 'approve' ? '/admin/approve' : '/admin/reject';
     if (!confirm(`Confirm ${type.toUpperCase()} transaction #${id}?`)) return;
-    const res = await fetch(WALLET_API + endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-admin-token': WALLET_TOKEN },
-      body: JSON.stringify({ transactionId: id, adminNotes: 'Processed by Admin' })
-    });
-    const data = await res.json();
-    if (data.success) { alert(`Updated #${id}`); loadWalletData(); }
+    try {
+      const data = await safeFetchJson(WALLET_API + endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': WALLET_TOKEN },
+        body: JSON.stringify({ transactionId: id, adminNotes: 'Processed by Admin' })
+      });
+      if (data.success) { alert(`Updated #${id}`); loadWalletData(); }
+    } catch (err) {
+      alert('❌ Action failed: ' + err.message);
+    }
   }
 
   // 🧪 SIMULATOR & ANTI-FRAUD FUNCTIONS
@@ -972,12 +1126,11 @@
     }
 
     try {
-      const res = await fetch(WALLET_API + '/deposit', {
+      const data = await safeFetchJson(WALLET_API + '/deposit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, amount, utr_number: utr })
       });
-      const data = await res.json();
       if (data.success) {
         alert(`✅ Pending Deposit Created for ₹${amount}! Check Pending list below.`);
         document.getElementById('sim-sms-text').value = `Dear Customer, A/c credited by Rs ${amount}.00 via UPI Ref no ${utr} on 01-Nov.`;
@@ -998,7 +1151,7 @@
     }
 
     try {
-      const res = await fetch(WALLET_API + '/webhook/sms-verify', {
+      const data = await safeFetchJson(WALLET_API + '/webhook/sms-verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1006,7 +1159,6 @@
           secret: 'alfaone_sms_secure_2026'
         })
       });
-      const data = await res.json();
       if (data.success) {
         alert("🎉 SUCCESS! " + data.message);
         loadWalletData();
@@ -1022,7 +1174,7 @@
   async function testWithdrawalBlock() {
     const userId = document.getElementById('sim-user-id').value.trim() || '11111111-1111-1111-1111-111111111111';
     try {
-      const res = await fetch(WALLET_API + '/withdraw', {
+      const data = await safeFetchJson(WALLET_API + '/withdraw', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1031,7 +1183,6 @@
           upi_id: 'test@upi'
         })
       });
-      const data = await res.json();
       alert(data.message || (data.success ? 'Withdrawal Created!' : 'Failed'));
       loadWalletData();
     } catch (err) {
@@ -1042,10 +1193,9 @@
   // UPI MANAGER FUNCTIONS
   async function loadUpiList() {
     try {
-      const res = await fetch(WALLET_API + '/admin/upi-list', {
+      const data = await safeFetchJson(WALLET_API + '/admin/upi-list', {
         headers: { 'x-admin-token': WALLET_TOKEN }
       });
-      const data = await res.json();
       const tbody = document.getElementById('upi-table-body');
 
       if (!data.success || !data.accounts || data.accounts.length === 0) {
@@ -1073,7 +1223,7 @@
         </tr>
       `).join('');
     } catch (err) {
-      console.error('Failed to load UPI list:', err);
+      console.error('Failed to load UPI list:', err.message);
     }
   }
 
@@ -1089,7 +1239,7 @@
     }
 
     try {
-      const res = await fetch(WALLET_API + '/admin/add-upi', {
+      const data = await safeFetchJson(WALLET_API + '/admin/add-upi', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-admin-token': WALLET_TOKEN },
         body: JSON.stringify({
@@ -1099,7 +1249,6 @@
           daily_limit: limit || 50000
         })
       });
-      const data = await res.json();
       if (data.success) {
         alert("✅ UPI Account Added Successfully!");
         document.getElementById('new-upi-id').value = '';
@@ -1117,30 +1266,28 @@
 
   async function toggleUpi(id, newStatus) {
     try {
-      const res = await fetch(WALLET_API + '/admin/toggle-upi', {
+      const data = await safeFetchJson(WALLET_API + '/admin/toggle-upi', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-admin-token': WALLET_TOKEN },
         body: JSON.stringify({ id: id, is_active: newStatus })
       });
-      const data = await res.json();
       if (data.success) loadUpiList();
     } catch (err) {
-      console.error(err);
+      alert('❌ Error: ' + err.message);
     }
   }
 
   async function deleteUpi(id) {
     if (!confirm(`Are you sure you want to delete UPI #${id}?`)) return;
     try {
-      const res = await fetch(WALLET_API + '/admin/delete-upi', {
+      const data = await safeFetchJson(WALLET_API + '/admin/delete-upi', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-admin-token': WALLET_TOKEN },
         body: JSON.stringify({ id: id })
       });
-      const data = await res.json();
       if (data.success) loadUpiList();
     } catch (err) {
-      console.error(err);
+      alert('❌ Error: ' + err.message);
     }
   }
 
