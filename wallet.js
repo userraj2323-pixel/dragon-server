@@ -68,13 +68,13 @@ function respondWithDatabaseError(res, error) {
     return res.status(500).json({ success: false, message: error.message || 'Wallet operation failed' });
 }
 
-// 👤 REAL USER FETCH
+// ✅ FIXED: Safe .select('*') taaki missing column (jaise users.name) par crash na ho
 async function fetchUser(userId) {
     if (!userId || !UUID_REGEX.test(userId)) return null;
 
     const { data, error } = await supabase
         .from('users')
-        .select('id, wallet_balance, locked_balance, turnover_required, turnover_done, name, phone')
+        .select('*')
         .eq('id', userId)
         .maybeSingle();
 
@@ -85,12 +85,9 @@ async function fetchUser(userId) {
             .from('users')
             .upsert({
                 id: DEFAULT_UUID,
-                wallet_balance: 0.00,
-                locked_balance: 0.00,
-                turnover_required: 0.00,
-                turnover_done: 0.00
+                wallet_balance: 0.00
             })
-            .select('id, wallet_balance, locked_balance, turnover_required, turnover_done, name, phone')
+            .select('*')
             .single();
 
         if (!createError && createdUser) return createdUser;
@@ -106,23 +103,34 @@ async function changeBalances(userId, walletDelta, lockedDelta, minimumWallet = 
         const user = await fetchUser(validId);
         if (!user) return { missing: true };
 
+        const hasLocked = Object.prototype.hasOwnProperty.call(user, 'locked_balance');
         const wallet = Number(user.wallet_balance || 0);
-        const locked = Number(user.locked_balance || 0);
-        if (wallet < minimumWallet || locked < minimumLocked) return { insufficient: true };
+        const locked = hasLocked ? Number(user.locked_balance || 0) : 0;
 
-        let query = supabase.from('users').update({
-            wallet_balance: wallet + walletDelta,
-            locked_balance: locked + lockedDelta
-        }).eq('id', validId);
+        if (wallet < minimumWallet || (hasLocked && locked < minimumLocked)) {
+            return { insufficient: true };
+        }
+
+        const updatePayload = {
+            wallet_balance: wallet + walletDelta
+        };
+        if (hasLocked) {
+            updatePayload.locked_balance = locked + lockedDelta;
+        }
+
+        let query = supabase.from('users').update(updatePayload).eq('id', validId);
 
         query = user.wallet_balance === null
             ? query.is('wallet_balance', null)
             : query.eq('wallet_balance', user.wallet_balance);
-        query = user.locked_balance === null
-            ? query.is('locked_balance', null)
-            : query.eq('locked_balance', user.locked_balance);
 
-        const { data, error } = await query.select('id, wallet_balance, locked_balance').maybeSingle();
+        if (hasLocked) {
+            query = user.locked_balance === null
+                ? query.is('locked_balance', null)
+                : query.eq('locked_balance', user.locked_balance);
+        }
+
+        const { data, error } = await query.select('*').maybeSingle();
         if (error) throw error;
         if (data) return { user: data };
     }
@@ -133,7 +141,7 @@ async function changeBalances(userId, walletDelta, lockedDelta, minimumWallet = 
 async function addTurnoverRequirement(userId, amount) {
     const validId = UUID_REGEX.test(userId) ? userId : DEFAULT_UUID;
     const user = await fetchUser(validId);
-    if (!user) return;
+    if (!user || !Object.prototype.hasOwnProperty.call(user, 'turnover_required')) return;
     const current = Number(user.turnover_required || 0);
     await supabase.from('users').update({
         turnover_required: current + amount
@@ -143,14 +151,14 @@ async function addTurnoverRequirement(userId, amount) {
 async function recordBetTurnover(userId, betAmount) {
     const validId = UUID_REGEX.test(userId) ? userId : DEFAULT_UUID;
     const user = await fetchUser(validId);
-    if (!user) return;
+    if (!user || !Object.prototype.hasOwnProperty.call(user, 'turnover_done')) return;
     const current = Number(user.turnover_done || 0);
     await supabase.from('users').update({
         turnover_done: current + betAmount
     }).eq('id', validId);
 }
 
-// 🔗 ENRICH TRANSACTIONS: Har transaction ke sath real Name aur Phone jodta hai
+// 🔗 ENRICH TRANSACTIONS: Safe .select('*')
 async function enrichTransactionsWithUserData(transactions) {
     if (!Array.isArray(transactions) || transactions.length === 0) return [];
     const userIds = [...new Set(transactions.map(t => t.user_id).filter(id => id && UUID_REGEX.test(id)))];
@@ -160,7 +168,7 @@ async function enrichTransactionsWithUserData(transactions) {
         try {
             const { data: users, error } = await supabase
                 .from('users')
-                .select('id, name, phone')
+                .select('*')
                 .in('id', userIds);
             if (!error && users) {
                 users.forEach(u => userMap.set(u.id, u));
@@ -172,7 +180,7 @@ async function enrichTransactionsWithUserData(transactions) {
 
     return transactions.map(t => {
         const u = userMap.get(t.user_id);
-        const name = (u?.name || '').trim();
+        const name = (u?.name || u?.display_name || u?.full_name || u?.username || '').trim();
         const phone = (u?.phone || '').trim();
 
         let display = '';
@@ -529,7 +537,7 @@ router.get('/admin/all-transactions', async (req, res) => {
     return res.json({ success: true, transactions: typeof db.getAllTransactionsList === 'function' ? db.getAllTransactionsList() : [] });
 });
 
-// ✅ FIXED: Direct Supabase Wallet Balance Adjustment
+// ✅ Direct Supabase Wallet Balance Adjustment
 router.post('/admin/adjust-balance', async (req, res) => {
     try {
         const rawUserId = req.body?.userId ?? req.body?.user_id;
@@ -593,7 +601,7 @@ router.post('/admin/adjust-balance', async (req, res) => {
     }
 });
 
-// ✅ FIXED: Safe Ban Toggle (No crash)
+// ✅ Safe Ban Toggle
 router.post('/admin/toggle-ban', async (req, res) => {
     try {
         const { userId } = req.body || {};
