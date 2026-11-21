@@ -38,7 +38,6 @@ function parseAmount(value) {
     return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
-// 🛡️ USER ID RESOLVER: Real UUID ya Registered Phone number se User ID dhoondta hai
 async function resolveUserId(body) {
     const raw = body.userId ?? body.user_id;
     if (typeof raw === 'string') {
@@ -68,7 +67,6 @@ function respondWithDatabaseError(res, error) {
     return res.status(500).json({ success: false, message: error.message || 'Wallet operation failed' });
 }
 
-// ✅ FIXED: Safe .select('*') taaki missing column (jaise users.name) par crash na ho
 async function fetchUser(userId) {
     if (!userId || !UUID_REGEX.test(userId)) return null;
 
@@ -137,7 +135,6 @@ async function changeBalances(userId, walletDelta, lockedDelta, minimumWallet = 
     throw new Error('Could not update wallet balance');
 }
 
-// 🛡️ TURNOVER TRACKING FUNCTIONS (1X WAGERING RULE)
 async function addTurnoverRequirement(userId, amount) {
     const validId = UUID_REGEX.test(userId) ? userId : DEFAULT_UUID;
     const user = await fetchUser(validId);
@@ -158,7 +155,6 @@ async function recordBetTurnover(userId, betAmount) {
     }).eq('id', validId);
 }
 
-// 🔗 ENRICH TRANSACTIONS: Safe .select('*')
 async function enrichTransactionsWithUserData(transactions) {
     if (!Array.isArray(transactions) || transactions.length === 0) return [];
     const userIds = [...new Set(transactions.map(t => t.user_id).filter(id => id && UUID_REGEX.test(id)))];
@@ -287,7 +283,6 @@ router.get('/balance/:userId', async (req, res) => {
 // ==========================================
 // 💳 USER TRANSACTIONS (REAL DEPOSIT & WITHDRAW)
 // ==========================================
-
 router.post('/deposit', async (req, res) => {
     const userId = await resolveUserId(req.body || {});
     const amount = parseAmount(req.body?.amount);
@@ -393,7 +388,6 @@ router.post('/withdraw', async (req, res) => {
 // ==========================================
 // ⚡ AI / SMS DEPOSIT AUTO-VERIFICATION WEBHOOK
 // ==========================================
-
 function parseBankSMS(message) {
     if (!message || typeof message !== 'string') return null;
 
@@ -494,7 +488,6 @@ router.post('/webhook/sms-verify', async (req, res) => {
 // ==========================================
 // 🛡️ ADMIN TRANSACTION AUDIT & CONTROLS
 // ==========================================
-
 router.get('/admin/pending', adminOnly, async (req, res) => {
     try {
         const { data, error } = await supabase
@@ -537,7 +530,6 @@ router.get('/admin/all-transactions', async (req, res) => {
     return res.json({ success: true, transactions: typeof db.getAllTransactionsList === 'function' ? db.getAllTransactionsList() : [] });
 });
 
-// ✅ Direct Supabase Wallet Balance Adjustment
 router.post('/admin/adjust-balance', async (req, res) => {
     try {
         const rawUserId = req.body?.userId ?? req.body?.user_id;
@@ -601,7 +593,6 @@ router.post('/admin/adjust-balance', async (req, res) => {
     }
 });
 
-// ✅ Safe Ban Toggle
 router.post('/admin/toggle-ban', async (req, res) => {
     try {
         const { userId } = req.body || {};
@@ -646,7 +637,6 @@ function getAdminRequest(req) {
     return { transactionId, adminNotes };
 }
 
-// 🟢 REAL DEPOSIT APPROVAL
 router.post('/admin/approve', adminOnly, async (req, res) => {
     const request = getAdminRequest(req);
     if (!request) return res.status(400).json({ success: false, message: 'Transaction ID is required' });
@@ -684,7 +674,6 @@ router.post('/admin/approve', adminOnly, async (req, res) => {
     }
 });
 
-// 🔴 WITHDRAWAL / DEPOSIT REJECTION
 router.post('/admin/reject', adminOnly, async (req, res) => {
     const request = getAdminRequest(req);
     if (!request) return res.status(400).json({ success: false, message: 'Transaction ID is required' });
@@ -724,7 +713,6 @@ router.post('/admin/reject', adminOnly, async (req, res) => {
 // ==========================================
 // 📱 DYNAMIC UPI & QR CODE MANAGEMENT
 // ==========================================
-
 router.get('/active-upi', async (req, res) => {
     try {
         const { data, error } = await supabase
@@ -883,6 +871,72 @@ router.post('/admin/delete-upi', adminOnly, async (req, res) => {
         return res.json({ success: true, message: 'UPI deleted successfully' });
     } catch (err) {
         return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// ==========================================
+// 🎮 ALL GAMES REAL-TIME BET (DEBIT) & WIN (CREDIT) API
+// ==========================================
+router.post('/game-transaction', async (req, res) => {
+    try {
+        const userId = await resolveUserId(req.body || {});
+        const amount = parseAmount(req.body?.amount);
+        const type = String(req.body?.type || '').trim().toUpperCase();
+
+        if (!userId || userId === DEFAULT_UUID) {
+            return res.status(401).json({ success: false, message: 'Session missing. Dobara login karein.' });
+        }
+        if (!amount) {
+            return res.status(400).json({ success: false, message: 'Valid amount is required' });
+        }
+
+        const isDebit = type === 'BET' || type === 'WITHDRAWAL';
+
+        const result = await withLock(`user:${userId}`, async () => {
+            const { data: user, error: fetchErr } = await supabase
+                .from('users')
+                .select('id, wallet_balance')
+                .eq('id', userId)
+                .maybeSingle();
+
+            if (fetchErr) throw fetchErr;
+            if (!user) return { notFound: true };
+
+            const currentBal = Number(user.wallet_balance || 0);
+            if (isDebit && currentBal < amount) {
+                return { insufficient: true, balance: currentBal };
+            }
+
+            const newBal = isDebit
+                ? Number((currentBal - amount).toFixed(2))
+                : Number((currentBal + amount).toFixed(2));
+
+            const { data: updated, error: updateErr } = await supabase
+                .from('users')
+                .update({ wallet_balance: newBal })
+                .eq('id', userId)
+                .select('id, wallet_balance')
+                .single();
+
+            if (updateErr) throw updateErr;
+            if (type === 'BET') {
+                try { await recordBetTurnover(userId, amount); } catch (_) {}
+            }
+            return { balance: Number(updated.wallet_balance || 0) };
+        });
+
+        if (result.notFound) return res.status(404).json({ success: false, message: 'User not found' });
+        if (result.insufficient) {
+            return res.status(400).json({
+                success: false,
+                message: 'Insufficient wallet balance',
+                balance: result.balance
+            });
+        }
+
+        return res.json({ success: true, balance: result.balance });
+    } catch (error) {
+        return respondWithDatabaseError(res, error);
     }
 });
 
