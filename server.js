@@ -51,7 +51,7 @@ function isAutoMode(val) {
 }
 
 // ==========================================
-// 1️⃣ DRAGON VS TIGER
+// 1️⃣ DRAGON VS TIGER (LOCKED)
 // ==========================================
 let dvtState = {
     phase: 'BETTING',
@@ -131,7 +131,7 @@ function tickDVT() {
 }
 
 // ==========================================
-// 2️⃣ COLOR PREDICTION
+// 2️⃣ COLOR PREDICTION (LOCKED)
 // ==========================================
 let colorState = {
     phase: 'BETTING',
@@ -272,7 +272,7 @@ function tickZoo() {
 }
 
 // ==========================================
-// 4️⃣ 7 UP DOWN
+// 4️⃣ 7 UP DOWN (LIVE HTTP + SOCKET SYNC)
 // ==========================================
 let sevenState = {
     phase: 'BETTING',
@@ -281,7 +281,8 @@ let sevenState = {
     cooldown: 0,
     roundStarted: false,
     bets: { DOWN: 0, SEVEN: 0, UP: 0 },
-    manualWinner: 'AUTO'
+    manualWinner: 'AUTO',
+    lastResult: null
 };
 
 function generateSevenDice(winner) {
@@ -313,16 +314,17 @@ function settleSeven() {
     const { dice1, dice2, total } = generateSevenDice(winner);
     const winningOption = winner === 'DOWN' ? 'TWO_TO_SIX' : (winner === 'UP' ? 'EIGHT_TO_TWELVE' : 'SEVEN');
 
-    emitAll('seven_round_result', {
+    sevenState.lastResult = {
         roundId: String(sevenState.roundId),
         winner,
         winningOption,
         dice1,
         dice2,
         total
-    });
+    };
+    emitAll('seven_round_result', sevenState.lastResult);
     sevenState.phase = 'RESULT';
-    sevenState.cooldown = 5;
+    sevenState.cooldown = 6;
 }
 
 function tickSeven() {
@@ -332,6 +334,7 @@ function tickSeven() {
         sevenState.timeLeft = 15;
         sevenState.roundId = Math.floor(10000 + Math.random() * 90000);
         sevenState.bets = { DOWN: 0, SEVEN: 0, UP: 0 };
+        sevenState.lastResult = null;
         sevenState.roundStarted = true;
         emitAll('seven_round_reset', { roundId: sevenState.roundId, currentMode: sevenState.manualWinner });
     } else if (!sevenState.roundStarted) {
@@ -406,6 +409,34 @@ app.post('/api/game/dvt-bet', (req, res) => {
         emitAll('timer_tick', { state: 'BETTING', timeLeft: dvtState.timeLeft, bets: dvtState.bets });
     }
     res.json({ success: true, bets: dvtState.bets });
+});
+
+app.get('/api/game/seven-state', (req, res) => {
+    res.json({
+        success: true,
+        roundId: String(sevenState.roundId),
+        timeLeft: sevenState.timeLeft,
+        phase: sevenState.phase,
+        bets: sevenState.bets,
+        result: sevenState.lastResult
+    });
+});
+
+app.post('/api/game/seven-bet', (req, res) => {
+    const rawChoice = String(req.body?.choice || req.body?.option || '').trim().toUpperCase();
+    const choice = rawChoice === 'TWO_TO_SIX' ? 'DOWN' : (rawChoice === 'EIGHT_TO_TWELVE' ? 'UP' : rawChoice);
+    const betAmt = Number(req.body?.amount) || 0;
+    if (sevenState.phase === 'BETTING' && betAmt > 0 && sevenState.bets[choice] !== undefined) {
+        sevenState.bets[choice] += betAmt;
+        emitAll('seven_timer_update', {
+            timeLeft: sevenState.timeLeft,
+            state: 'BETTING',
+            roundId: sevenState.roundId,
+            bets: sevenState.bets,
+            currentMode: sevenState.manualWinner
+        });
+    }
+    res.json({ success: true, bets: sevenState.bets });
 });
 
 // ==========================================
@@ -541,9 +572,16 @@ io.on('connection', (socket) => {
         const rawChoice = String(data?.choice || data?.option || '').trim().toUpperCase();
         const choice = rawChoice === 'TWO_TO_SIX' ? 'DOWN' : (rawChoice === 'EIGHT_TO_TWELVE' ? 'UP' : rawChoice);
         const betAmt = Number(data?.amount) || 0;
-        if (sevenState.phase !== 'BETTING' || sevenState.timeLeft <= 3 || betAmt <= 0) return;
+        if (sevenState.phase !== 'BETTING' || betAmt <= 0) return;
         if (sevenState.bets[choice] !== undefined) {
             sevenState.bets[choice] += betAmt;
+            emitAll('seven_timer_update', {
+                timeLeft: sevenState.timeLeft,
+                state: 'BETTING',
+                roundId: sevenState.roundId,
+                bets: sevenState.bets,
+                currentMode: sevenState.manualWinner
+            });
         }
     });
 
