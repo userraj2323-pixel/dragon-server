@@ -1,560 +1,619 @@
-const express = require('express');
-const http = require('http');
-const cors = require('cors');
-const path = require('path');
-const walletRouter = require('./wallet');
-const authRouter = require('./auth');
+package com.example.dragonalpha.viewmodel
 
-const app = express();
-app.set('trust proxy', 1);
-app.use(cors());
-app.use(express.json());
-app.use(express.static(__dirname));
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.dragonalpha.model.*
+import com.example.dragonalpha.repository.AuthRepository
+import com.example.dragonalpha.repository.MockWalletRepository
+import com.example.dragonalpha.repository.WalletRepository
+import com.example.dragonalpha.sound.SoundManager
+import io.socket.client.IO
+import io.socket.client.Socket
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URISyntaxException
+import java.net.URL
 
-app.use('/api/auth', authRouter);
-app.use('/api/wallet', walletRouter);
+typealias BetMap = Map<BetType, Int>
 
-app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
-app.get('/admin.html', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
-app.get('/', (req, res) => res.send('👑 AlfaOne Real Money Multi-Game Engine Running'));
+class DragonVsTigerViewModel(
+    private val walletRepository: WalletRepository,
+    private val authRepository: AuthRepository
+) : ViewModel() {
 
-const server = http.createServer(app);
-const io = require('socket.io')(server, {
-    cors: { origin: "*", methods: ["GET", "POST"] },
-    allowEIO3: true,
-    transports: ['polling', 'websocket'],
-    allowUpgrades: true,
-    pingInterval: 25000,
-    pingTimeout: 60000
-});
+    private val SERVER_URL = "https://dragon-server-0y5z.onrender.com"
 
-function emitAll(event, payload) {
-    if (io.engine.clientsCount > 0) {
-        io.emit(event, payload);
-    }
-}
+    private val _gamePhase = MutableStateFlow(DVTGamePhase.BETTING)
+    val gamePhase: StateFlow<DVTGamePhase> = _gamePhase.asStateFlow()
 
-function pickLowestPayout(payoutMap) {
-    const entries = Object.entries(payoutMap);
-    let minVal = Infinity;
-    for (const [, val] of entries) {
-        if (val < minVal) minVal = val;
-    }
-    const candidates = entries.filter(([, val]) => val === minVal).map(([key]) => key);
-    return candidates[Math.floor(Math.random() * candidates.length)];
-}
+    private val _timeRemaining = MutableStateFlow(20)
+    val timeRemaining: StateFlow<Int> = _timeRemaining.asStateFlow()
 
-function isAutoMode(val) {
-    if (!val) return true;
-    const s = String(val).trim().toUpperCase();
-    return s === '' || s === 'AUTO' || s === 'AUTO_PROFIT' || s === 'PROFIT' || s === 'NONE' || s === 'NULL';
-}
+    private val _roundId = MutableStateFlow("SYNCING...")
+    val roundId: StateFlow<String> = _roundId.asStateFlow()
 
-// ==========================================
-// 1️⃣ DRAGON VS TIGER
-// ==========================================
-let dvtState = {
-    phase: 'BETTING',
-    timeLeft: 20,
-    cooldown: 0,
-    roundStarted: false,
-    roundId: Math.floor(100000 + Math.random() * 900000),
-    bets: { DRAGON: 0, TIGER: 0, TIE: 0 },
-    manualWinner: 'AUTO',
-    lastResult: null
-};
+    private val _selectedChip = MutableStateFlow(100)
+    val selectedChip: StateFlow<Int> = _selectedChip.asStateFlow()
 
-function generateDVTCards(winner) {
-    if (winner === 'DRAGON') {
-        const dCard = Math.floor(Math.random() * 12) + 2;
-        const tCard = Math.floor(Math.random() * (dCard - 1)) + 1;
-        return { dCard, tCard };
-    }
-    if (winner === 'TIGER') {
-        const tCard = Math.floor(Math.random() * 12) + 2;
-        const dCard = Math.floor(Math.random() * (tCard - 1)) + 1;
-        return { dCard, tCard };
-    }
-    const tieVal = Math.floor(Math.random() * 13) + 1;
-    return { dCard: tieVal, tCard: tieVal };
-}
+    private val _userBets = MutableStateFlow<BetMap>(emptyMap())
+    val userBets: StateFlow<BetMap> = _userBets.asStateFlow()
 
-function settleDVT() {
-    dvtState.phase = 'CALCULATING';
-    emitAll('timer_tick', { state: 'CALCULATING', timeLeft: 0, bets: dvtState.bets });
+    private var lastUserBets: BetMap = emptyMap()
 
-    let winner = dvtState.manualWinner;
-    if (isAutoMode(winner)) {
-        const totalBets = (dvtState.bets.DRAGON || 0) + (dvtState.bets.TIGER || 0) + (dvtState.bets.TIE || 0);
-        if (totalBets === 0) {
-            winner = Math.random() < 0.48 ? 'DRAGON' : (Math.random() < 0.96 ? 'TIGER' : 'TIE');
-        } else {
-            winner = pickLowestPayout({
-                DRAGON: (dvtState.bets.DRAGON || 0) * 2,
-                TIGER: (dvtState.bets.TIGER || 0) * 2,
-                TIE: (dvtState.bets.TIE || 0) * 9
-            });
-        }
+    private val _totalZoneBets = MutableStateFlow<BetMap>(
+        BetType.allBets.associateWith { 0 }
+    )
+    val totalZoneBets: StateFlow<BetMap> = _totalZoneBets.asStateFlow()
+
+    private val _dragonCard = MutableStateFlow<PlayingCard?>(null)
+    val dragonCard: StateFlow<PlayingCard?> = _dragonCard.asStateFlow()
+
+    private val _tigerCard = MutableStateFlow<PlayingCard?>(null)
+    val tigerCard: StateFlow<PlayingCard?> = _tigerCard.asStateFlow()
+
+    private val _lastResult = MutableStateFlow<DVTRoundResult?>(null)
+    val lastResult: StateFlow<DVTRoundResult?> = _lastResult.asStateFlow()
+
+    private val _lastPayoutAmount = MutableStateFlow(0)
+    val lastPayoutAmount: StateFlow<Int> = _lastPayoutAmount.asStateFlow()
+
+    private val _history = MutableStateFlow<List<DVTRoundResult>>(emptyList())
+    val history: StateFlow<List<DVTRoundResult>> = _history.asStateFlow()
+
+    private val _balance = MutableStateFlow(0.0)
+    val balance: StateFlow<Double> = _balance.asStateFlow()
+
+    private val _chipEvents = MutableSharedFlow<DVTChipAnimation>(extraBufferCapacity = 64)
+    val chipEvents: SharedFlow<DVTChipAnimation> = _chipEvents.asSharedFlow()
+
+    private val _showWinEffect = MutableStateFlow(false)
+    val showWinEffect: StateFlow<Boolean> = _showWinEffect.asStateFlow()
+
+    private var isScreenActive = false
+    private var mSocket: Socket? = null
+    private var lastSocketTickTime = 0L
+    private var syncJob: Job? = null
+    private var settledRoundId: String? = null
+
+    fun onScreenResume() {
+        isScreenActive = true
+        refreshBalance()
+        try {
+            if (mSocket?.connected() != true) {
+                mSocket?.connect()
+            }
+        } catch (_: Exception) {}
     }
 
-    const { dCard, tCard } = generateDVTCards(winner);
-    dvtState.lastResult = { roundId: dvtState.roundId, winner, dCard, tCard };
-    emitAll('round_result', dvtState.lastResult);
-    dvtState.phase = 'RESULT';
-    dvtState.cooldown = 5;
-}
-
-function tickDVT() {
-    if (dvtState.phase === 'RESULT') {
-        if (--dvtState.cooldown > 0) return;
-        dvtState.phase = 'BETTING';
-        dvtState.timeLeft = 20;
-        dvtState.roundId = Math.floor(100000 + Math.random() * 900000);
-        dvtState.bets = { DRAGON: 0, TIGER: 0, TIE: 0 };
-        dvtState.lastResult = null;
-        dvtState.roundStarted = true;
-        emitAll('round_start', { roundId: dvtState.roundId, manualWinner: dvtState.manualWinner });
-        emitAll('timer_tick', { state: 'BETTING', timeLeft: dvtState.timeLeft, bets: dvtState.bets });
-        return;
-    }
-    if (!dvtState.roundStarted) {
-        dvtState.roundStarted = true;
-        emitAll('round_start', { roundId: dvtState.roundId, manualWinner: dvtState.manualWinner });
-        emitAll('timer_tick', { state: 'BETTING', timeLeft: dvtState.timeLeft, bets: dvtState.bets });
-        return;
-    }
-    if (--dvtState.timeLeft > 0) {
-        emitAll('timer_tick', { state: 'BETTING', timeLeft: dvtState.timeLeft, bets: dvtState.bets });
-    } else {
-        settleDVT();
-    }
-}
-
-// ==========================================
-// 2️⃣ COLOR PREDICTION
-// ==========================================
-let colorState = {
-    phase: 'BETTING',
-    roundId: Math.floor(100000 + Math.random() * 900000),
-    timeLeft: 30,
-    cooldown: 0,
-    roundStarted: false,
-    bets: { RED: { total: 0 }, GREEN: { total: 0 }, VIOLET: { total: 0 } },
-    currentMode: 'AUTO',
-    winningColor: null
-};
-
-function settleColor() {
-    colorState.phase = 'CALCULATING';
-
-    let winColor = colorState.currentMode;
-    if (isAutoMode(winColor)) {
-        winColor = pickLowestPayout({
-            RED: (colorState.bets.RED.total || 0) * 2,
-            GREEN: (colorState.bets.GREEN.total || 0) * 2,
-            VIOLET: (colorState.bets.VIOLET.total || 0) * 4.5
-        });
+    fun onScreenPause() {
+        isScreenActive = false
     }
 
-    colorState.winningColor = winColor;
-    emitAll('color_round_result', { roundId: String(colorState.roundId), winningColor: winColor });
-    colorState.phase = 'RESULT';
-    colorState.cooldown = 5;
-}
-
-function tickColor() {
-    if (colorState.phase === 'RESULT') {
-        if (--colorState.cooldown > 0) return;
-        colorState.phase = 'BETTING';
-        colorState.timeLeft = 30;
-        colorState.roundId = Math.floor(100000 + Math.random() * 900000);
-        colorState.bets = { RED: { total: 0 }, GREEN: { total: 0 }, VIOLET: { total: 0 } };
-        colorState.winningColor = null;
-        colorState.roundStarted = true;
-    } else if (!colorState.roundStarted) {
-        colorState.roundStarted = true;
-    } else if (--colorState.timeLeft <= 0) {
-        settleColor();
-        return;
+    init {
+        observeWalletBalance()
+        refreshBalance()
+        connectToSocketServer()
+        startLiveHttpSyncLoop()
     }
 
-    const tickPayload = {
-        timeLeft: colorState.timeLeft,
-        roundId: String(colorState.roundId),
-        phase: colorState.phase
-    };
-    emitAll('admin_color_update', {
-        roundId: colorState.roundId,
-        timeLeft: colorState.timeLeft,
-        liveUsers: io.engine.clientsCount,
-        bets: colorState.bets,
-        currentMode: colorState.currentMode
-    });
-    emitAll('color_timer_tick', tickPayload);
-    emitAll('color_game_tick', tickPayload);
-}
-
-// ==========================================
-// 3️⃣ ZOO ROULETTE
-// ==========================================
-const ANIMALS = [
-    { id: 'swallow', multiplier: 6 }, { id: 'rabbit', multiplier: 6 },
-    { id: 'monkey', multiplier: 8 }, { id: 'panda', multiplier: 8 },
-    { id: 'peacock', multiplier: 8 }, { id: 'pigeon', multiplier: 8 },
-    { id: 'eagle', multiplier: 12 }, { id: 'lion', multiplier: 12 },
-    { id: 'silver_shark', multiplier: 24 }, { id: 'gold_shark', multiplier: 24 }
-];
-
-let zooState = {
-    phase: 'BETTING',
-    roundId: Math.floor(1000 + Math.random() * 9000),
-    timeLeft: 15,
-    cooldown: 0,
-    roundStarted: false,
-    bets: {},
-    manualWinner: 'AUTO'
-};
-
-function resetZoo() {
-    zooState.bets = {};
-    ANIMALS.forEach(a => { zooState.bets[a.id] = { amount: 0, playerCount: 0 }; });
-}
-resetZoo();
-
-function settleZoo() {
-    zooState.phase = 'CALCULATING';
-
-    let winAnimal = zooState.manualWinner;
-    if (isAutoMode(winAnimal)) {
-        const payoutMap = {};
-        for (const a of ANIMALS) {
-            payoutMap[a.id] = (zooState.bets[a.id]?.amount || 0) * a.multiplier;
-        }
-        winAnimal = pickLowestPayout(payoutMap);
+    private suspend fun resolveUserId(): String {
+        val authUid = authRepository.currentUser.firstOrNull()?.uid.orEmpty()
+        return listOf(
+            authUid,
+            MockWalletRepository.activeUserId.orEmpty(),
+            MockWalletRepository.activePhone.orEmpty()
+        ).map { it.trim() }.firstOrNull {
+            it.isNotBlank() && !it.equals("GUEST", true) && !it.equals("GUEST_USER", true) && !it.startsWith("11111111")
+        }.orEmpty()
     }
 
-    const matched = ANIMALS.find(a => a.id === winAnimal) || ANIMALS[0];
-    emitAll('zoo_round_result', {
-        winningAnimal: matched.id,
-        winner: matched.id,
-        multiplier: matched.multiplier,
-        roundId: zooState.roundId
-    });
-    zooState.phase = 'RESULT';
-    zooState.cooldown = 6;
-}
-
-function tickZoo() {
-    if (zooState.phase === 'RESULT') {
-        if (--zooState.cooldown > 0) return;
-        zooState.phase = 'BETTING';
-        zooState.timeLeft = 15;
-        zooState.roundId = Math.floor(1000 + Math.random() * 9000);
-        resetZoo();
-        zooState.roundStarted = true;
-        emitAll('zoo_round_reset', { roundId: zooState.roundId, currentMode: zooState.manualWinner });
-    } else if (!zooState.roundStarted) {
-        zooState.roundStarted = true;
-        emitAll('zoo_round_reset', { roundId: zooState.roundId, currentMode: zooState.manualWinner });
-    } else if (--zooState.timeLeft <= 0) {
-        settleZoo();
-        return;
-    }
-
-    emitAll('zoo_timer_update', {
-        timeLeft: zooState.timeLeft,
-        state: 'BETTING',
-        roundId: zooState.roundId,
-        bets: zooState.bets,
-        currentMode: zooState.manualWinner,
-        livePlayers: io.engine.clientsCount
-    });
-}
-
-// ==========================================
-// 4️⃣ 7 UP DOWN
-// ==========================================
-let sevenState = {
-    phase: 'BETTING',
-    roundId: Math.floor(10000 + Math.random() * 90000),
-    timeLeft: 15,
-    cooldown: 0,
-    roundStarted: false,
-    bets: { DOWN: 0, SEVEN: 0, UP: 0 },
-    manualWinner: 'AUTO'
-};
-
-function generateSevenDice(winner) {
-    const pairs = [];
-    for (let d1 = 1; d1 <= 6; d1++) {
-        for (let d2 = 1; d2 <= 6; d2++) {
-            const sum = d1 + d2;
-            if (winner === 'DOWN' && sum < 7) pairs.push([d1, d2, sum]);
-            else if (winner === 'SEVEN' && sum === 7) pairs.push([d1, d2, sum]);
-            else if (winner === 'UP' && sum > 7) pairs.push([d1, d2, sum]);
-        }
-    }
-    const picked = pairs[Math.floor(Math.random() * pairs.length)] || [3, 4, 7];
-    return { dice1: picked[0], dice2: picked[1], total: picked[2] };
-}
-
-function settleSeven() {
-    sevenState.phase = 'CALCULATING';
-
-    let winner = sevenState.manualWinner;
-    if (isAutoMode(winner)) {
-        winner = pickLowestPayout({
-            DOWN: (sevenState.bets.DOWN || 0) * 2,
-            UP: (sevenState.bets.UP || 0) * 2,
-            SEVEN: (sevenState.bets.SEVEN || 0) * 5
-        });
-    }
-
-    const { dice1, dice2, total } = generateSevenDice(winner);
-    const winningOption = winner === 'DOWN' ? 'TWO_TO_SIX' : (winner === 'UP' ? 'EIGHT_TO_TWELVE' : 'SEVEN');
-
-    emitAll('seven_round_result', {
-        roundId: String(sevenState.roundId),
-        winner,
-        winningOption,
-        dice1,
-        dice2,
-        total
-    });
-    sevenState.phase = 'RESULT';
-    sevenState.cooldown = 5;
-}
-
-function tickSeven() {
-    if (sevenState.phase === 'RESULT') {
-        if (--sevenState.cooldown > 0) return;
-        sevenState.phase = 'BETTING';
-        sevenState.timeLeft = 15;
-        sevenState.roundId = Math.floor(10000 + Math.random() * 90000);
-        sevenState.bets = { DOWN: 0, SEVEN: 0, UP: 0 };
-        sevenState.roundStarted = true;
-        emitAll('seven_round_reset', { roundId: sevenState.roundId, currentMode: sevenState.manualWinner });
-    } else if (!sevenState.roundStarted) {
-        sevenState.roundStarted = true;
-    } else if (--sevenState.timeLeft <= 0) {
-        settleSeven();
-        return;
-    }
-
-    emitAll('seven_timer_update', {
-        timeLeft: sevenState.timeLeft,
-        state: 'BETTING',
-        roundId: sevenState.roundId,
-        bets: sevenState.bets,
-        currentMode: sevenState.manualWinner
-    });
-}
-
-setInterval(() => {
-    tickDVT();
-    tickColor();
-    tickZoo();
-    tickSeven();
-}, 1000);
-
-// ==========================================
-// 🌐 HTTP LIVE GAME SYNC API (100% RELIABLE)
-// ==========================================
-app.get('/api/game/color-state', (req, res) => {
-    res.json({
-        success: true,
-        roundId: String(colorState.roundId),
-        timeLeft: colorState.timeLeft,
-        phase: colorState.phase,
-        winningColor: colorState.winningColor
-    });
-});
-
-app.post('/api/game/color-bet', (req, res) => {
-    const color = String(req.body?.color || '').trim().toUpperCase();
-    const betAmt = Number(req.body?.amount) || 0;
-    if (colorState.phase === 'BETTING' && colorState.timeLeft > 5 && betAmt > 0 && colorState.bets[color]) {
-        colorState.bets[color].total += betAmt;
-        emitAll('admin_color_update', {
-            roundId: colorState.roundId,
-            timeLeft: colorState.timeLeft,
-            liveUsers: Math.max(1, io.engine.clientsCount),
-            bets: colorState.bets,
-            currentMode: colorState.currentMode
-        });
-    }
-    res.json({ success: true });
-});
-
-app.get('/api/game/dvt-state', (req, res) => {
-    res.json({
-        success: true,
-        roundId: dvtState.roundId,
-        timeLeft: dvtState.timeLeft,
-        phase: dvtState.phase,
-        result: dvtState.lastResult
-    });
-});
-
-// ==========================================
-// 🔌 SOCKET EVENTS (GAMES + ADMIN CONTROLS)
-// ==========================================
-io.on('connection', (socket) => {
-    socket.on('join_admin', () => {
-        socket.emit('admin_status_update', {
-            manualWinner: dvtState.manualWinner === 'AUTO' ? null : dvtState.manualWinner,
-            currentMode: dvtState.manualWinner,
-            bets: dvtState.bets
-        });
-        socket.emit('admin_color_update', {
-            roundId: colorState.roundId,
-            timeLeft: colorState.timeLeft,
-            liveUsers: io.engine.clientsCount,
-            bets: colorState.bets,
-            currentMode: colorState.currentMode
-        });
-        socket.emit('zoo_timer_update', {
-            timeLeft: zooState.timeLeft,
-            state: zooState.phase,
-            roundId: zooState.roundId,
-            bets: zooState.bets,
-            currentMode: zooState.manualWinner,
-            livePlayers: io.engine.clientsCount
-        });
-        socket.emit('seven_timer_update', {
-            timeLeft: sevenState.timeLeft,
-            state: sevenState.phase,
-            roundId: sevenState.roundId,
-            bets: sevenState.bets,
-            currentMode: sevenState.manualWinner
-        });
-    });
-
-    socket.on('join_color_game', () => {
-        const tickPayload = {
-            timeLeft: colorState.timeLeft,
-            roundId: String(colorState.roundId),
-            phase: colorState.phase
-        };
-        socket.emit('color_timer_tick', tickPayload);
-        socket.emit('color_game_tick', tickPayload);
-    });
-
-    socket.on('place_bet', (data) => {
-        const betOn = String(data?.bet_on || '').trim().toUpperCase();
-        const betAmt = Number(data?.amount) || 0;
-        if (dvtState.phase !== 'BETTING' || betAmt <= 0) return;
-        if (dvtState.bets[betOn] !== undefined) {
-            dvtState.bets[betOn] += betAmt;
-            emitAll('bets_updated', dvtState.bets);
-        }
-    });
-
-    socket.on('admin_set_winner', (data) => {
-        const raw = data?.winner ?? data?.mode ?? data?.choice ?? 'AUTO';
-        const norm = isAutoMode(raw) ? 'AUTO' : String(raw).trim().toUpperCase();
-        if (['AUTO', 'DRAGON', 'TIGER', 'TIE'].includes(norm)) {
-            dvtState.manualWinner = norm;
-            emitAll('admin_status_update', {
-                manualWinner: norm === 'AUTO' ? null : norm,
-                currentMode: norm,
-                bets: dvtState.bets
-            });
-        }
-    });
-
-    socket.on('color_place_bet', (data) => {
-        const color = String(data?.color || '').trim().toUpperCase();
-        const betAmt = Number(data?.amount) || 0;
-        if (colorState.phase !== 'BETTING' || colorState.timeLeft <= 5 || betAmt <= 0) return;
-        if (colorState.bets[color]) {
-            colorState.bets[color].total += betAmt;
-            emitAll('admin_color_update', {
-                roundId: colorState.roundId,
-                timeLeft: colorState.timeLeft,
-                liveUsers: io.engine.clientsCount,
-                bets: colorState.bets,
-                currentMode: colorState.currentMode
-            });
-        }
-    });
-
-    socket.on('admin_set_color_mode', (data) => {
-        const raw = data?.mode ?? data?.color ?? data?.winner ?? 'AUTO';
-        const norm = isAutoMode(raw) ? 'AUTO' : String(raw).trim().toUpperCase();
-        if (['AUTO', 'RED', 'GREEN', 'VIOLET'].includes(norm)) {
-            colorState.currentMode = norm;
-            emitAll('admin_color_update', {
-                roundId: colorState.roundId,
-                timeLeft: colorState.timeLeft,
-                liveUsers: io.engine.clientsCount,
-                bets: colorState.bets,
-                currentMode: colorState.currentMode
-            });
-        }
-    });
-
-    socket.on('zoo_place_bet', (data) => {
-        const rawAnimal = String(data?.animalId || data?.animal || '').replace(/^anim_/i, '').trim().toLowerCase();
-        const betAmt = Number(data?.amount) || 0;
-        if (zooState.phase !== 'BETTING' || zooState.timeLeft <= 3 || betAmt <= 0) return;
-        if (zooState.bets[rawAnimal]) {
-            zooState.bets[rawAnimal].amount += betAmt;
-            zooState.bets[rawAnimal].playerCount += 1;
-        }
-    });
-
-    socket.on('admin_set_zoo_winner', (data) => {
-        const raw = data?.animal ?? data?.animalId ?? data?.mode ?? data?.winner ?? 'AUTO';
-        if (isAutoMode(raw)) {
-            zooState.manualWinner = 'AUTO';
-        } else {
-            const clean = String(raw).replace(/^anim_/i, '').trim().toLowerCase();
-            if (ANIMALS.some(a => a.id === clean)) {
-                zooState.manualWinner = clean;
+    private fun refreshBalance() {
+        viewModelScope.launch {
+            val uid = resolveUserId()
+            if (uid.isNotBlank()) {
+                walletRepository.refreshBalance(uid)
             }
         }
-        emitAll('zoo_mode_update', { currentMode: zooState.manualWinner });
-        emitAll('zoo_timer_update', {
-            timeLeft: zooState.timeLeft,
-            state: zooState.phase,
-            roundId: zooState.roundId,
-            bets: zooState.bets,
-            currentMode: zooState.manualWinner,
-            livePlayers: io.engine.clientsCount
-        });
-    });
+    }
 
-    socket.on('seven_place_bet', (data) => {
-        const rawChoice = String(data?.choice || data?.option || '').trim().toUpperCase();
-        const choice = rawChoice === 'TWO_TO_SIX' ? 'DOWN' : (rawChoice === 'EIGHT_TO_TWELVE' ? 'UP' : rawChoice);
-        const betAmt = Number(data?.amount) || 0;
-        if (sevenState.phase !== 'BETTING' || sevenState.timeLeft <= 3 || betAmt <= 0) return;
-        if (sevenState.bets[choice] !== undefined) {
-            sevenState.bets[choice] += betAmt;
-        }
-    });
-
-    socket.on('admin_set_seven_winner', (data) => {
-        const raw = data?.choice ?? data?.option ?? data?.mode ?? data?.winner ?? 'AUTO';
-        if (isAutoMode(raw)) {
-            sevenState.manualWinner = 'AUTO';
-        } else {
-            const upper = String(raw).trim().toUpperCase();
-            const mapped = upper === 'TWO_TO_SIX' ? 'DOWN' : (upper === 'EIGHT_TO_TWELVE' ? 'UP' : upper);
-            if (['DOWN', 'SEVEN', 'UP'].includes(mapped)) {
-                sevenState.manualWinner = mapped;
+    private fun observeWalletBalance() {
+        viewModelScope.launch {
+            walletRepository.getBalance().collect { bal ->
+                _balance.value = bal
             }
         }
-        emitAll('seven_timer_update', {
-            timeLeft: sevenState.timeLeft,
-            state: sevenState.phase,
-            roundId: sevenState.roundId,
-            bets: sevenState.bets,
-            currentMode: sevenState.manualWinner
-        });
-    });
-});
+    }
 
-const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => console.log(`🚀 AlfaOne Multi-Game Server Live on port ${PORT}`));
+    private fun connectToSocketServer() {
+        try {
+            val opts = IO.Options().apply {
+                transports = arrayOf("polling", "websocket")
+                upgrade = true
+                reconnection = true
+            }
+            mSocket = IO.socket(SERVER_URL, opts)
+            setupSocketEvents()
+            mSocket?.connect()
+        } catch (e: URISyntaxException) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun setupSocketEvents() {
+        mSocket?.on("round_start") { args ->
+            if (args.isNotEmpty()) {
+                lastSocketTickTime = System.currentTimeMillis()
+                val data = args[0] as? JSONObject ?: return@on
+                val rId = data.optInt("roundId", 0)
+                if (rId > 0) {
+                    applyServerRoundStart("DVT-$rId")
+                }
+            }
+        }
+
+        mSocket?.on("timer_tick") { args ->
+            if (args.isNotEmpty()) {
+                lastSocketTickTime = System.currentTimeMillis()
+                val data = args[0] as? JSONObject ?: return@on
+                val timeLeft = data.optInt("timeLeft", 0)
+                val state = data.optString("state", "BETTING")
+                applyServerTick(timeLeft, state)
+            }
+        }
+
+        mSocket?.on("round_result") { args ->
+            if (args.isNotEmpty()) {
+                lastSocketTickTime = System.currentTimeMillis()
+                val data = args[0] as? JSONObject ?: return@on
+                handleServerResultJson(data)
+            }
+        }
+    }
+
+    // 100% Reliable Live HTTP Sync (matches Admin Panel exact Round, Timer & Force Win)
+    private fun startLiveHttpSyncLoop() {
+        syncJob?.cancel()
+        syncJob = viewModelScope.launch {
+            while (true) {
+                if (isScreenActive && System.currentTimeMillis() - lastSocketTickTime > 2500) {
+                    val stateJson = fetchServerDvtState()
+                    if (stateJson != null && stateJson.optBoolean("success", false)) {
+                        val rawRoundId = stateJson.optInt("roundId", 0)
+                        val timeLeft = stateJson.optInt("timeLeft", 0)
+                        val phase = stateJson.optString("phase", "BETTING").uppercase()
+                        val fullRoundId = if (rawRoundId > 0) "DVT-$rawRoundId" else _roundId.value
+
+                        if (rawRoundId > 0 && _roundId.value != fullRoundId) {
+                            applyServerRoundStart(fullRoundId)
+                        }
+
+                        if (phase == "RESULT") {
+                            val resObj = stateJson.optJSONObject("result")
+                            if (resObj != null) {
+                                handleServerResultJson(resObj)
+                            }
+                        } else {
+                            applyServerTick(timeLeft, phase)
+                        }
+                    }
+                }
+                delay(1000)
+            }
+        }
+    }
+
+    private suspend fun fetchServerDvtState(): JSONObject? = withContext(Dispatchers.IO) {
+        try {
+            val url = URL("$SERVER_URL/api/game/dvt-state")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                useCaches = false
+                connectTimeout = 5000
+                readTimeout = 5000
+            }
+            val code = conn.responseCode
+            val text = if (code in 200..299) conn.inputStream.bufferedReader().use { it.readText() } else ""
+            conn.disconnect()
+            if (text.isNotBlank()) JSONObject(text) else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun notifyServerDvtBetHttp(betOn: String, amount: Int) = withContext(Dispatchers.IO) {
+        try {
+            val url = URL("$SERVER_URL/api/game/dvt-bet")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+                connectTimeout = 5000
+                readTimeout = 5000
+            }
+            val body = JSONObject().apply {
+                put("bet_on", betOn)
+                put("amount", amount)
+            }
+            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            conn.responseCode
+            conn.disconnect()
+        } catch (_: Exception) {}
+    }
+
+    private fun applyServerRoundStart(fullRoundId: String) {
+        _roundId.value = fullRoundId
+        _gamePhase.value = DVTGamePhase.BETTING
+        _dragonCard.value = null
+        _tigerCard.value = null
+        _showWinEffect.value = false
+        _lastPayoutAmount.value = 0
+        _totalZoneBets.value = BetType.allBets.associateWith { 0 }
+    }
+
+    private fun applyServerTick(timeLeft: Int, state: String) {
+        _timeRemaining.value = timeLeft
+        if (state.equals("BETTING", ignoreCase = true) && timeLeft > 0) {
+            if (_gamePhase.value != DVTGamePhase.BETTING) {
+                _gamePhase.value = DVTGamePhase.BETTING
+            }
+            if (isScreenActive && timeLeft in 1..5) {
+                SoundManager.playCountdownTick()
+            }
+        } else {
+            if (_gamePhase.value == DVTGamePhase.BETTING && isScreenActive) {
+                SoundManager.playRoundLocked()
+            }
+        }
+    }
+
+    private fun handleServerResultJson(data: JSONObject) {
+        val rId = data.optInt("roundId", 0)
+        val fullRoundId = if (rId > 0) "DVT-$rId" else _roundId.value
+        if (settledRoundId == fullRoundId) return
+        settledRoundId = fullRoundId
+
+        val dCardVal = data.optInt("dCard", 7)
+        val tCardVal = data.optInt("tCard", 7)
+        val winnerStr = data.optString("winner", "DRAGON")
+
+        val winType = when {
+            winnerStr.equals("DRAGON", ignoreCase = true) -> WinnerType.DRAGON
+            winnerStr.equals("TIGER", ignoreCase = true) -> WinnerType.TIGER
+            else -> WinnerType.TIE
+        }
+
+        val dRank = CardRank.entries.find { it.ordinal + 1 == dCardVal } ?: CardRank.SEVEN
+        val tRank = CardRank.entries.find { it.ordinal + 1 == tCardVal } ?: CardRank.SEVEN
+
+        val dCard = PlayingCard(CardSuit.SPADES, dRank)
+        val tCard = PlayingCard(CardSuit.HEARTS, tRank)
+
+        viewModelScope.launch {
+            runRevealAndPayout(fullRoundId, winType, dCard, tCard)
+        }
+    }
+
+    private suspend fun runRevealAndPayout(
+        roundId: String,
+        winType: WinnerType,
+        dCard: PlayingCard,
+        tCard: PlayingCard
+    ) {
+        _timeRemaining.value = 0
+        _gamePhase.value = DVTGamePhase.DEALING
+        _dragonCard.value = dCard
+        _tigerCard.value = tCard
+        delay(500)
+
+        _gamePhase.value = DVTGamePhase.REVEAL_DRAGON
+        if (isScreenActive) SoundManager.playResultReveal()
+        delay(800)
+
+        _gamePhase.value = DVTGamePhase.REVEAL_TIGER
+        if (isScreenActive) SoundManager.playResultReveal()
+        delay(800)
+
+        _gamePhase.value = DVTGamePhase.EVALUATION
+        val result = DVTRoundResult(
+            roundId = roundId,
+            winner = winType,
+            dragonCard = dCard,
+            tigerCard = tCard
+        )
+        _lastResult.value = result
+
+        if (isScreenActive) {
+            when (winType) {
+                WinnerType.DRAGON -> SoundManager.playDragonRoar()
+                WinnerType.TIGER -> SoundManager.playTigerRoar()
+                else -> {}
+            }
+        }
+
+        val newHistory = _history.value.toMutableList()
+        newHistory.add(result)
+        if (newHistory.size > 30) newHistory.removeAt(0)
+        _history.value = newHistory
+        delay(600)
+
+        _gamePhase.value = DVTGamePhase.PAYOUT
+        calculatePayout(result)
+    }
+
+    private suspend fun calculatePayout(result: DVTRoundResult) {
+        val currentBets = _userBets.value
+        var totalWin = 0.0
+        var totalStaked = 0.0
+
+        for (entry in currentBets) {
+            val bet = entry.key
+            val amount = entry.value
+            totalStaked += amount
+            val isWin = evaluateBet(bet, result)
+            val multiplier = when (bet) {
+                BetType.Dragon, BetType.Tiger -> 1.0
+                BetType.Tie -> 8.0
+                else -> 1.0
+            }
+            if (isWin) {
+                totalWin += amount + (amount * multiplier)
+            } else if (result.winner == WinnerType.TIE && (bet == BetType.Dragon || bet == BetType.Tiger)) {
+                totalWin += amount * 0.5
+            }
+        }
+
+        _lastPayoutAmount.value = totalWin.toInt()
+
+        if (totalWin > 0) {
+            val uid = resolveUserId()
+            if (uid.isNotBlank()) {
+                walletRepository.processTransaction(
+                    userId = uid,
+                    amount = totalWin,
+                    type = TransactionType.WIN,
+                    referenceId = "DVT-WIN-${_roundId.value}"
+                )
+            }
+
+            if (totalWin > totalStaked && isScreenActive) {
+                _showWinEffect.value = true
+                SoundManager.playWinEffect()
+            }
+        }
+
+        lastUserBets = currentBets
+        _userBets.value = emptyMap()
+    }
+
+    private fun evaluateBet(bet: BetType, result: DVTRoundResult): Boolean {
+        return when (bet) {
+            BetType.Dragon -> result.winner == WinnerType.DRAGON
+            BetType.Tiger -> result.winner == WinnerType.TIGER
+            BetType.Tie -> result.winner == WinnerType.TIE
+            else -> false
+        }
+    }
+
+    fun selectChip(amount: Int) {
+        _selectedChip.value = amount
+        if (isScreenActive) {
+            SoundManager.playCoinBet()
+        }
+    }
+
+    // Instant Bet (0ms UI lag + Background Supabase Sync)
+    fun placeBet(betType: BetType, startX: Float = 0.5f, startY: Float = 0.8f) {
+        if (_gamePhase.value != DVTGamePhase.BETTING) return
+        val chipVal = _selectedChip.value
+        if (_balance.value < chipVal) return
+
+        val betOnStr = when (betType) {
+            BetType.Dragon -> "DRAGON"
+            BetType.Tiger -> "TIGER"
+            BetType.Tie -> "TIE"
+            else -> null
+        }
+
+        // 1. Instant UI Update + Chip Animation + Sound
+        _balance.value = (_balance.value - chipVal).coerceAtLeast(0.0)
+
+        val userMap = _userBets.value.toMutableMap()
+        userMap[betType] = (userMap[betType] ?: 0) + chipVal
+        _userBets.value = userMap
+
+        val totalMap = _totalZoneBets.value.toMutableMap()
+        totalMap[betType] = (totalMap[betType] ?: 0) + chipVal
+        _totalZoneBets.value = totalMap
+
+        _chipEvents.tryEmit(
+            DVTChipAnimation(
+                amount = chipVal,
+                startX = startX,
+                startY = startY,
+                targetBetType = betType
+            )
+        )
+        if (isScreenActive) SoundManager.playChipPlace()
+
+        // 2. Background Supabase Deduction + Admin Panel Live Bet Sync
+        val currentRound = _roundId.value
+        viewModelScope.launch {
+            val uid = resolveUserId()
+            if (uid.isBlank()) {
+                revertLocalBet(betType, chipVal)
+                return@launch
+            }
+
+            val result = walletRepository.processTransaction(
+                userId = uid,
+                amount = chipVal.toDouble(),
+                type = TransactionType.BET,
+                referenceId = "DVT-BET-$currentRound"
+            )
+
+            if (result.isSuccess) {
+                if (betOnStr != null) {
+                    notifyServerDvtBetHttp(betOnStr, chipVal)
+                    try {
+                        val jsonObject = JSONObject().apply {
+                            put("bet_on", betOnStr)
+                            put("amount", chipVal)
+                            put("userId", uid)
+                        }
+                        mSocket?.emit("place_bet", jsonObject)
+                    } catch (_: Exception) {}
+                }
+            } else {
+                revertLocalBet(betType, chipVal)
+            }
+        }
+    }
+
+    private fun revertLocalBet(betType: BetType, amount: Int) {
+        val userMap = _userBets.value.toMutableMap()
+        val updatedUserAmt = ((userMap[betType] ?: 0) - amount).coerceAtLeast(0)
+        if (updatedUserAmt <= 0) userMap.remove(betType) else userMap[betType] = updatedUserAmt
+        _userBets.value = userMap
+
+        val totalMap = _totalZoneBets.value.toMutableMap()
+        totalMap[betType] = ((totalMap[betType] ?: 0) - amount).coerceAtLeast(0)
+        _totalZoneBets.value = totalMap
+
+        refreshBalance()
+    }
+
+    fun clearBets() {
+        if (_gamePhase.value != DVTGamePhase.BETTING) return
+        val currentBets = _userBets.value
+        if (currentBets.isEmpty()) return
+
+        val totalRefund = currentBets.values.sum().toDouble()
+        viewModelScope.launch {
+            val uid = resolveUserId()
+            if (uid.isBlank()) return@launch
+
+            walletRepository.processTransaction(
+                userId = uid,
+                amount = totalRefund,
+                type = TransactionType.WIN,
+                referenceId = "DVT-CLEAR-REFUND"
+            )
+
+            val totalMap = _totalZoneBets.value.toMutableMap()
+            for (entry in currentBets) {
+                val bet = entry.key
+                val amt = entry.value
+                totalMap[bet] = ((totalMap[bet] ?: 0) - amt).coerceAtLeast(0)
+            }
+            _totalZoneBets.value = totalMap
+            _userBets.value = emptyMap()
+
+            if (isScreenActive) {
+                SoundManager.playCoinBet()
+            }
+        }
+    }
+
+    fun doubleBets() {
+        if (_gamePhase.value != DVTGamePhase.BETTING) return
+        val currentBets = _userBets.value
+        if (currentBets.isEmpty()) return
+
+        val totalAdditionalStaked = currentBets.values.sum().toDouble()
+        if (_balance.value < totalAdditionalStaked) return
+
+        viewModelScope.launch {
+            val uid = resolveUserId()
+            if (uid.isBlank()) return@launch
+
+            val result = walletRepository.processTransaction(
+                userId = uid,
+                amount = totalAdditionalStaked,
+                type = TransactionType.BET,
+                referenceId = "DVT-DOUBLE-BET"
+            )
+
+            if (result.isSuccess) {
+                val newBets = currentBets.mapValues { it.value * 2 }
+                val totalMap = _totalZoneBets.value.toMutableMap()
+                for (entry in currentBets) {
+                    val bet = entry.key
+                    val amt = entry.value
+                    totalMap[bet] = (totalMap[bet] ?: 0) + amt
+                    val betOnStr = when (bet) {
+                        BetType.Dragon -> "DRAGON"
+                        BetType.Tiger -> "TIGER"
+                        BetType.Tie -> "TIE"
+                        else -> null
+                    }
+                    if (betOnStr != null) notifyServerDvtBetHttp(betOnStr, amt)
+                }
+                _totalZoneBets.value = totalMap
+                _userBets.value = newBets
+
+                if (isScreenActive) {
+                    SoundManager.playCoinBet()
+                }
+            }
+        }
+    }
+
+    fun repeatBets() {
+        if (_gamePhase.value != DVTGamePhase.BETTING) return
+        if (lastUserBets.isEmpty()) return
+
+        val neededBalance = lastUserBets.values.sum().toDouble()
+        if (_balance.value < neededBalance) return
+
+        viewModelScope.launch {
+            val uid = resolveUserId()
+            if (uid.isBlank()) return@launch
+
+            val result = walletRepository.processTransaction(
+                userId = uid,
+                amount = neededBalance,
+                type = TransactionType.BET,
+                referenceId = "DVT-REPEAT-BET"
+            )
+
+            if (result.isSuccess) {
+                val userMap = _userBets.value.toMutableMap()
+                val totalMap = _totalZoneBets.value.toMutableMap()
+
+                for (entry in lastUserBets) {
+                    val bet = entry.key
+                    val amt = entry.value
+                    userMap[bet] = (userMap[bet] ?: 0) + amt
+                    totalMap[bet] = (totalMap[bet] ?: 0) + amt
+                    val betOnStr = when (bet) {
+                        BetType.Dragon -> "DRAGON"
+                        BetType.Tiger -> "TIGER"
+                        BetType.Tie -> "TIE"
+                        else -> null
+                    }
+                    if (betOnStr != null) notifyServerDvtBetHttp(betOnStr, amt)
+                }
+
+                _userBets.value = userMap
+                _totalZoneBets.value = totalMap
+
+                if (isScreenActive) {
+                    SoundManager.playCoinBet()
+                }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        syncJob?.cancel()
+        mSocket?.disconnect()
+        mSocket?.off()
+    }
+}
