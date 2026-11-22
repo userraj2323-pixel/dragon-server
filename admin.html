@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AlfaOne - Master Admin & Live Bets Control</title>
   <link rel="icon" href="data:,">
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
   <style>
     * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; }
     body { background-color: #0b111e; color: #ffffff; padding: 20px 15px; min-height: 100vh; }
@@ -780,12 +780,13 @@
     document.body.removeChild(link);
   }
 
-  // SOCKET CONNECTION (WebSocket-only to prevent Render 429 polling limits)
+  // SOCKET CONNECTION (Polling + WebSocket upgrade for Render stability)
   const statusPill = document.getElementById('socket-status-pill');
   const socket = io(SERVER_URL, {
-    transports: ['websocket'],
+    transports: ['polling', 'websocket'],
+    upgrade: true,
     reconnection: true,
-    reconnectionDelay: 3000,
+    reconnectionDelay: 2000,
     reconnectionDelayMax: 10000
   });
 
