@@ -195,7 +195,7 @@ function tickColor() {
 }
 
 // ==========================================
-// 3️⃣ ZOO ROULETTE
+// 3️⃣ ZOO ROULETTE (LIVE HTTP + SOCKET SYNC)
 // ==========================================
 const ANIMALS = [
     { id: 'swallow', multiplier: 6 }, { id: 'rabbit', multiplier: 6 },
@@ -212,7 +212,8 @@ let zooState = {
     cooldown: 0,
     roundStarted: false,
     bets: {},
-    manualWinner: 'AUTO'
+    manualWinner: 'AUTO',
+    lastResult: null
 };
 
 function resetZoo() {
@@ -234,12 +235,13 @@ function settleZoo() {
     }
 
     const matched = ANIMALS.find(a => a.id === winAnimal) || ANIMALS[0];
-    emitAll('zoo_round_result', {
+    zooState.lastResult = {
         winningAnimal: matched.id,
         winner: matched.id,
         multiplier: matched.multiplier,
-        roundId: zooState.roundId
-    });
+        roundId: String(zooState.roundId)
+    };
+    emitAll('zoo_round_result', zooState.lastResult);
     zooState.phase = 'RESULT';
     zooState.cooldown = 6;
 }
@@ -251,6 +253,7 @@ function tickZoo() {
         zooState.timeLeft = 15;
         zooState.roundId = Math.floor(1000 + Math.random() * 9000);
         resetZoo();
+        zooState.lastResult = null;
         zooState.roundStarted = true;
         emitAll('zoo_round_reset', { roundId: zooState.roundId, currentMode: zooState.manualWinner });
     } else if (!zooState.roundStarted) {
@@ -272,7 +275,7 @@ function tickZoo() {
 }
 
 // ==========================================
-// 4️⃣ 7 UP DOWN (LIVE HTTP + SOCKET SYNC)
+// 4️⃣ 7 UP DOWN (LOCKED)
 // ==========================================
 let sevenState = {
     phase: 'BETTING',
@@ -324,7 +327,7 @@ function settleSeven() {
     };
     emitAll('seven_round_result', sevenState.lastResult);
     sevenState.phase = 'RESULT';
-    sevenState.cooldown = 6;
+    sevenState.cooldown = 5;
 }
 
 function tickSeven() {
@@ -439,6 +442,36 @@ app.post('/api/game/seven-bet', (req, res) => {
     res.json({ success: true, bets: sevenState.bets });
 });
 
+app.get('/api/game/zoo-state', (req, res) => {
+    res.json({
+        success: true,
+        roundId: String(zooState.roundId),
+        timeLeft: zooState.timeLeft,
+        phase: zooState.phase,
+        bets: zooState.bets,
+        livePlayers: io.engine.clientsCount,
+        result: zooState.lastResult
+    });
+});
+
+app.post('/api/game/zoo-bet', (req, res) => {
+    const rawAnimal = String(req.body?.animalId || req.body?.animal || '').replace(/^anim_/i, '').trim().toLowerCase();
+    const betAmt = Number(req.body?.amount) || 0;
+    if (zooState.phase === 'BETTING' && betAmt > 0 && zooState.bets[rawAnimal]) {
+        zooState.bets[rawAnimal].amount += betAmt;
+        zooState.bets[rawAnimal].playerCount += 1;
+        emitAll('zoo_timer_update', {
+            timeLeft: zooState.timeLeft,
+            state: 'BETTING',
+            roundId: zooState.roundId,
+            bets: zooState.bets,
+            currentMode: zooState.manualWinner,
+            livePlayers: io.engine.clientsCount
+        });
+    }
+    res.json({ success: true, bets: zooState.bets });
+});
+
 // ==========================================
 // 🔌 SOCKET EVENTS (GAMES + ADMIN CONTROLS)
 // ==========================================
@@ -473,14 +506,15 @@ io.on('connection', (socket) => {
         });
     });
 
-    socket.on('join_color_game', () => {
-        const tickPayload = {
-            timeLeft: colorState.timeLeft,
-            roundId: String(colorState.roundId),
-            phase: colorState.phase
-        };
-        socket.emit('color_timer_tick', tickPayload);
-        socket.emit('color_game_tick', tickPayload);
+    socket.on('join_zoo_game', () => {
+        socket.emit('zoo_timer_update', {
+            timeLeft: zooState.timeLeft,
+            state: zooState.phase,
+            roundId: zooState.roundId,
+            bets: zooState.bets,
+            currentMode: zooState.manualWinner,
+            livePlayers: io.engine.clientsCount
+        });
     });
 
     socket.on('place_bet', (data) => {
@@ -540,10 +574,18 @@ io.on('connection', (socket) => {
     socket.on('zoo_place_bet', (data) => {
         const rawAnimal = String(data?.animalId || data?.animal || '').replace(/^anim_/i, '').trim().toLowerCase();
         const betAmt = Number(data?.amount) || 0;
-        if (zooState.phase !== 'BETTING' || zooState.timeLeft <= 3 || betAmt <= 0) return;
+        if (zooState.phase !== 'BETTING' || betAmt <= 0) return;
         if (zooState.bets[rawAnimal]) {
             zooState.bets[rawAnimal].amount += betAmt;
             zooState.bets[rawAnimal].playerCount += 1;
+            emitAll('zoo_timer_update', {
+                timeLeft: zooState.timeLeft,
+                state: zooState.phase,
+                roundId: zooState.roundId,
+                bets: zooState.bets,
+                currentMode: zooState.manualWinner,
+                livePlayers: io.engine.clientsCount
+            });
         }
     });
 
